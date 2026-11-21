@@ -144,7 +144,12 @@ export default {
       }
     }
 
-    // 5. Fallback: Sajikan file statis (HTML, CSS, JS) via Cloudflare Pages
+    // 5. API: GET /api/gallery (Fallback untuk Cloudflare Pages)
+    if (url.pathname === '/api/gallery' && request.method === 'GET') {
+      return new Response(JSON.stringify({ success: true, photos: [] }), { headers: corsHeaders });
+    }
+
+    // 6. Fallback: Sajikan file statis (HTML, CSS, JS) via Cloudflare Pages
     if (env.ASSETS) {
       return env.ASSETS.fetch(request);
     }

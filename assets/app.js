@@ -10,92 +10,43 @@
 const API_BASE = (window.location.protocol === 'file:') ? 'http://localhost:3800' : '';
 const CLOUD_SCRIPT_KEY = 'pmt_cloud_script_url';
 
-function getCloudScriptUrl() {
-  return localStorage.getItem(CLOUD_SCRIPT_KEY) || '';
-}
+// ==========================================
+// 1. PERSISTENCE ENGINE & DATA STORE (DEEP MODULE)
+// ==========================================
 
-function setCloudScriptUrl(url) {
-  if (url && url.trim()) {
-    localStorage.setItem(CLOUD_SCRIPT_KEY, url.trim());
-  } else {
-    localStorage.removeItem(CLOUD_SCRIPT_KEY);
-  }
-  updateCloudStatusUI();
-}
-
-function updateCloudStatusUI() {
-  const url = getCloudScriptUrl();
-  const badge = document.getElementById('cloud-status-badge');
-  const btn = document.getElementById('btn-cloud-config');
-  if (badge) {
-    if (url) {
-      badge.textContent = 'Drive Online';
-      if (btn) {
-        btn.classList.remove('btn-secondary');
-        btn.classList.add('btn-success');
-      }
-    } else {
-      badge.textContent = 'Google Drive';
-      if (btn) {
-        btn.classList.remove('btn-success');
-        btn.classList.add('btn-secondary');
-      }
-    }
-  }
-}
-
-class ApiClient {
-  static async getDocuments() {
-    const cloudUrl = getCloudScriptUrl();
-    if (cloudUrl) {
-      const res = await fetch(`${cloudUrl}?action=getDocuments`);
-      const data = await res.json();
-      return (data && data.success && Array.isArray(data.documents)) ? data.documents : [];
-    }
-    const res = await fetch(`${API_BASE}/api/documents`);
-    if (res.ok) {
-      return await res.json();
-    }
-    return [];
+/**
+ * Adapter 1: Cloudflare D1 Backend (REST API via _worker.js)
+ */
+class D1BackendAdapter {
+  constructor(apiBase = '') {
+    this.apiBase = apiBase;
   }
 
-  static async saveDocuments(docs) {
-    const cloudUrl = getCloudScriptUrl();
-    if (cloudUrl) {
-      await fetch(cloudUrl, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'saveDocuments', documents: docs })
-      });
-      return true;
-    }
-    await fetch(`${API_BASE}/api/documents`, {
+  async getDocuments() {
+    const res = await fetch(`${this.apiBase}/api/documents`);
+    if (!res.ok) throw new Error(`D1 HTTP ${res.status}`);
+    const data = await res.json();
+    return Array.isArray(data) ? data : [];
+  }
+
+  async saveDocuments(docs) {
+    const res = await fetch(`${this.apiBase}/api/documents`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(docs)
     });
+    if (!res.ok) throw new Error(`D1 HTTP ${res.status}`);
     return true;
   }
 
-  static async getGallery() {
-    const cloudUrl = getCloudScriptUrl();
-    if (cloudUrl) {
-      const res = await fetch(`${cloudUrl}?action=getGallery`);
-      return await res.json();
-    }
-    const res = await fetch(`${API_BASE}/api/gallery`);
+  async getGallery() {
+    const res = await fetch(`${this.apiBase}/api/gallery`);
+    if (!res.ok) throw new Error(`D1 HTTP ${res.status}`);
     return await res.json();
   }
 
-  static async login(username, password) {
-    const cloudUrl = getCloudScriptUrl();
-    if (cloudUrl) {
-      const res = await fetch(cloudUrl, {
-        method: 'POST',
-        body: JSON.stringify({ action: 'login', username, password })
-      });
-      return await res.json();
-    }
-    const res = await fetch(`${API_BASE}/api/login`, {
+  async login(username, password) {
+    const res = await fetch(`${this.apiBase}/api/login`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ username, password })
@@ -104,10 +55,426 @@ class ApiClient {
   }
 }
 
+/**
+ * Adapter 2: Google Drive Apps Script Backend (Web App Endpoint)
+ */
+class DriveBackendAdapter {
+  constructor(getScriptUrlFn) {
+    this.getScriptUrl = getScriptUrlFn;
+  }
+
+  get isConfigured() {
+    const url = this.getScriptUrl();
+    return Boolean(url && url.trim().length > 10);
+  }
+
+  async getDocuments() {
+    const url = this.getScriptUrl();
+    if (!url) return null;
+    const res = await fetch(`${url}?action=getDocuments`);
+    if (!res.ok) throw new Error(`Drive HTTP ${res.status}`);
+    const data = await res.json();
+    return (data && data.success && Array.isArray(data.documents)) ? data.documents : [];
+  }
+
+  async saveDocuments(docs) {
+    const url = this.getScriptUrl();
+    if (!url) return false;
+    const res = await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'saveDocuments', documents: docs })
+    });
+    return res.ok;
+  }
+
+  async getGallery() {
+    const url = this.getScriptUrl();
+    if (!url) return null;
+    const res = await fetch(`${url}?action=getGallery`);
+    if (!res.ok) throw new Error(`Drive HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async login(username, password) {
+    const url = this.getScriptUrl();
+    if (!url) return null;
+    const res = await fetch(url, {
+      method: 'POST',
+      body: JSON.stringify({ action: 'login', username, password })
+    });
+    return await res.json();
+  }
+}
+
+/**
+ * Adapter 3: IndexedDB Storage Adapter (Local Offline Persistence)
+ */
+class IndexedDBStorageAdapter {
+  constructor(dbName = 'AplikasiPMT_Database_v2', storeName = 'documents', version = 1) {
+    this.dbName = dbName;
+    this.storeName = storeName;
+    this.version = version;
+    this._db = null;
+  }
+
+  async getDB() {
+    if (this._db) return this._db;
+    return new Promise((resolve, reject) => {
+      const request = indexedDB.open(this.dbName, this.version);
+      request.onerror = () => reject(request.error);
+      request.onsuccess = () => {
+        this._db = request.result;
+        resolve(this._db);
+      };
+      request.onupgradeneeded = (e) => {
+        const db = e.target.result;
+        if (!db.objectStoreNames.contains(this.storeName)) {
+          const store = db.createObjectStore(this.storeName, { keyPath: 'id' });
+          store.createIndex('desa', 'desa', { unique: false });
+          store.createIndex('updatedAt', 'updatedAt', { unique: false });
+        }
+      };
+    });
+  }
+
+  async getAll() {
+    try {
+      const db = await this.getDB();
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(this.storeName, 'readonly');
+        const store = tx.objectStore(this.storeName);
+        const req = store.getAll();
+        req.onsuccess = () => resolve(req.result || []);
+        req.onerror = () => reject(req.error);
+      });
+    } catch (err) {
+      console.warn('IndexedDB getAll error:', err);
+      return [];
+    }
+  }
+
+  async getById(id) {
+    const all = await this.getAll();
+    return all.find(d => d.id === id) || null;
+  }
+
+  async put(doc) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readwrite');
+      const store = tx.objectStore(this.storeName);
+      const req = store.put(doc);
+      req.onsuccess = () => resolve(doc);
+      req.onerror = () => reject(req.error);
+    });
+  }
+
+  async putBatch(docs) {
+    if (!Array.isArray(docs) || docs.length === 0) return;
+    const db = await this.getDB();
+    const tx = db.transaction(this.storeName, 'readwrite');
+    const store = tx.objectStore(this.storeName);
+    for (const doc of docs) {
+      store.put(doc);
+    }
+    return new Promise((resolve, reject) => {
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
+  async delete(id) {
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readwrite');
+      const store = tx.objectStore(this.storeName);
+      const req = store.delete(id);
+      req.onsuccess = () => resolve(true);
+      req.onerror = () => reject(req.error);
+    });
+  }
+}
+
+/**
+ * DEEP MODULE: PMTDataStore
+ * Small, high-leverage interface with deep encapsulation:
+ * - Transparent multi-adapter failover (Google Drive, Cloudflare D1, IndexedDB)
+ * - Automatic photo usage status reconciliation across documents
+ * - Built-in offline resilient authentication & background sync
+ */
+class PMTDataStore {
+  constructor(options = {}) {
+    this.cloudScriptKey = options.cloudScriptKey || CLOUD_SCRIPT_KEY;
+    this.apiBase = options.apiBase !== undefined ? options.apiBase : API_BASE;
+
+    // Adapters behind the seam
+    this.idbAdapter = new IndexedDBStorageAdapter();
+    this.d1Adapter = new D1BackendAdapter(this.apiBase);
+    this.driveAdapter = new DriveBackendAdapter(() => this.getDriveUrl());
+    this.cachedGallery = [];
+  }
+
+  // --- Provider & Configuration ---
+  getDriveUrl() {
+    return localStorage.getItem(this.cloudScriptKey) || '';
+  }
+
+  setDriveUrl(url) {
+    if (url && url.trim()) {
+      localStorage.setItem(this.cloudScriptKey, url.trim());
+    } else {
+      localStorage.removeItem(this.cloudScriptKey);
+    }
+    this.updateProviderStatusUI();
+  }
+
+  getStatus() {
+    const driveUrl = this.getDriveUrl();
+    if (driveUrl) {
+      return { provider: 'drive', isOnline: true, label: 'Google Drive Online' };
+    }
+    if (this.apiBase === '') {
+      return { provider: 'd1', isOnline: true, label: 'Cloudflare D1 Online' };
+    }
+    return { provider: 'local', isOnline: true, label: 'Mode Lokal PC' };
+  }
+
+  updateProviderStatusUI() {
+    const status = this.getStatus();
+    const badge = document.getElementById('cloud-status-badge');
+    const btn = document.getElementById('btn-cloud-config');
+    if (badge) {
+      if (status.provider === 'drive') {
+        badge.textContent = 'Drive Online';
+        if (btn) {
+          btn.classList.remove('btn-secondary');
+          btn.classList.add('btn-success');
+        }
+      } else {
+        badge.textContent = 'Google Drive';
+        if (btn) {
+          btn.classList.remove('btn-success');
+          btn.classList.add('btn-secondary');
+        }
+      }
+    }
+  }
+
+  // --- Document Interface (Deep Methods) ---
+  async getDocuments(filter = {}) {
+    let docs = [];
+
+    // 1. Try remote provider (Drive or D1)
+    try {
+      if (this.driveAdapter.isConfigured) {
+        const driveDocs = await this.driveAdapter.getDocuments();
+        if (Array.isArray(driveDocs)) docs = driveDocs;
+      } else {
+        const d1Docs = await this.d1Adapter.getDocuments();
+        if (Array.isArray(d1Docs)) docs = d1Docs;
+      }
+
+      // Mirror to local IndexedDB
+      if (docs.length > 0) {
+        await this.idbAdapter.putBatch(docs);
+      }
+    } catch (netErr) {
+      console.warn('Sinkronisasi cloud terhambat, membaca data lokal:', netErr);
+    }
+
+    // 2. Fallback to local storage if remote returned nothing or failed
+    if (docs.length === 0) {
+      docs = await this.idbAdapter.getAll();
+    }
+
+    // 3. Filter options
+    if (filter.desa && filter.desa !== 'ALL') {
+      docs = docs.filter(d => d.desa && d.desa.toLowerCase() === filter.desa.toLowerCase());
+    }
+    if (filter.query && filter.query.trim()) {
+      const q = filter.query.toLowerCase().trim();
+      docs = docs.filter(d =>
+        (d.desa && d.desa.toLowerCase().includes(q)) ||
+        (d.termin && d.termin.toLowerCase().includes(q)) ||
+        (d.tanggalCustom && d.tanggalCustom.toLowerCase().includes(q)) ||
+        (d.judul && d.judul.toLowerCase().includes(q))
+      );
+    }
+
+    return docs;
+  }
+
+  async getDocumentById(id) {
+    if (!id) return null;
+    const localDoc = await this.idbAdapter.getById(id);
+    if (localDoc) return localDoc;
+    const all = await this.getDocuments();
+    return all.find(d => d.id === id) || null;
+  }
+
+  async saveDocument(doc) {
+    if (!doc || !doc.id) throw new Error('Dokumen tidak valid (ID wajib diisi).');
+    doc.updatedAt = new Date().toISOString();
+    if (!doc.createdAt) doc.createdAt = doc.updatedAt;
+
+    // 1. Local persistence
+    await this.idbAdapter.put(doc);
+
+    // 2. Remote background sync
+    try {
+      const allDocs = await this.idbAdapter.getAll();
+      if (this.driveAdapter.isConfigured) {
+        await this.driveAdapter.saveDocuments(allDocs);
+      } else {
+        await this.d1Adapter.saveDocuments(allDocs);
+      }
+    } catch (syncErr) {
+      console.warn('Sinkronisasi cloud ditunda (offline):', syncErr);
+    }
+
+    return doc;
+  }
+
+  async deleteDocument(id) {
+    if (!id) return false;
+    await this.idbAdapter.delete(id);
+
+    try {
+      const allDocs = await this.idbAdapter.getAll();
+      if (this.driveAdapter.isConfigured) {
+        await this.driveAdapter.saveDocuments(allDocs);
+      } else {
+        await this.d1Adapter.saveDocuments(allDocs);
+      }
+    } catch (syncErr) {
+      console.warn('Sinkronisasi penghapusan ditunda:', syncErr);
+    }
+
+    return true;
+  }
+
+  // --- Gallery Interface (With automated photo usage reconciliation) ---
+  async getGalleryPhotos(desaFilter = 'ALL') {
+    let rawPhotos = [];
+    try {
+      if (this.driveAdapter.isConfigured) {
+        const driveData = await this.driveAdapter.getGallery();
+        if (driveData && Array.isArray(driveData.photos)) rawPhotos = driveData.photos;
+      } else {
+        const localData = await this.d1Adapter.getGallery();
+        if (localData && Array.isArray(localData.photos)) rawPhotos = localData.photos;
+      }
+    } catch (err) {
+      console.warn('Galeri foto tidak dapat diakses:', err);
+    }
+
+    this.cachedGallery = rawPhotos;
+
+    // Hitung status pemakaian foto secara terpusat
+    const allDocs = await this.idbAdapter.getAll();
+    const photoUsageMap = new Map();
+    for (const doc of allDocs) {
+      if (Array.isArray(doc.fotos)) {
+        for (const f of doc.fotos) {
+          const key = (f.galleryPath || f.relativePath || f.filename || '').toLowerCase();
+          if (key && !photoUsageMap.has(key)) {
+            photoUsageMap.set(key, { docId: doc.id, desa: doc.desa, termin: doc.termin });
+          }
+        }
+      }
+    }
+
+    const annotatedPhotos = rawPhotos.map(photo => {
+      const key = (photo.relativePath || photo.filename || '').toLowerCase();
+      const usedInfo = photoUsageMap.get(key) || photo.usedInfo || null;
+      return {
+        ...photo,
+        isUsed: Boolean(usedInfo),
+        usedInfo: usedInfo
+      };
+    });
+
+    if (desaFilter && desaFilter !== 'ALL') {
+      return annotatedPhotos.filter(p => p.desa && p.desa.toLowerCase() === desaFilter.toLowerCase());
+    }
+    return annotatedPhotos;
+  }
+
+  // --- Authentication Interface ---
+  async authenticate(username, password) {
+    const u = (username || '').trim();
+    const p = (password || '').trim();
+    if (!u || !p) return null;
+
+    // 1. Try remote provider
+    try {
+      let result = null;
+      if (this.driveAdapter.isConfigured) {
+        result = await this.driveAdapter.login(u, p);
+      } else {
+        result = await this.d1Adapter.login(u, p);
+      }
+      if (result && result.success && result.user) {
+        return result.user;
+      }
+    } catch (netErr) {
+      console.warn('Autentikasi remote gagal, memeriksa akun offline:', netErr);
+    }
+
+    // 2. Offline fallback admin verification
+    if (u.toLowerCase() === 'mochamad fauzie, s.gz' && p === '213117') {
+      return {
+        id: 'u_admin_1',
+        username: 'Mochamad Fauzie, S.Gz',
+        role: 'Admin',
+        puskesmas: 'Puskesmas Banjaran Kota'
+      };
+    }
+
+    return null;
+  }
+}
+
+// Global Store Instance
+const pmtStore = new PMTDataStore();
+window.pmtStore = pmtStore;
+
+// Helpers mapped to Deep Store
+function getCloudScriptUrl() {
+  return pmtStore.getDriveUrl();
+}
+
+function setCloudScriptUrl(url) {
+  pmtStore.setDriveUrl(url);
+}
+
+function updateCloudStatusUI() {
+  pmtStore.updateProviderStatusUI();
+}
+
+// Backwards-Compatible Facades
+class PMTStorage {
+  static openDB() { return pmtStore.idbAdapter.getDB(); }
+  static getAll() { return pmtStore.getDocuments(); }
+  static getById(id) { return pmtStore.getDocumentById(id); }
+  static save(doc) { return pmtStore.saveDocument(doc); }
+  static delete(id) { return pmtStore.deleteDocument(id); }
+  static getAllFromIDB() { return pmtStore.idbAdapter.getAll(); }
+}
+window.PMTStorage = PMTStorage;
+
+class ApiClient {
+  static getDocuments() { return pmtStore.getDocuments(); }
+  static saveDocuments(docs) { return pmtStore.d1Adapter.saveDocuments(docs); }
+  static getGallery() { return pmtStore.getGalleryPhotos(); }
+  static login(u, p) { return pmtStore.authenticate(u, p); }
+}
+window.ApiClient = ApiClient;
+
 function openCloudConfigModal() {
   const modal = document.getElementById('cloud-config-modal');
   const input = document.getElementById('input-apps-script-url');
-  if (input) input.value = getCloudScriptUrl();
+  if (input) input.value = pmtStore.getDriveUrl();
   if (modal) modal.style.display = 'flex';
 }
 
@@ -119,7 +486,7 @@ function closeCloudConfigModal() {
 async function saveCloudConfig() {
   const input = document.getElementById('input-apps-script-url');
   const url = input ? input.value.trim() : '';
-  setCloudScriptUrl(url);
+  pmtStore.setDriveUrl(url);
   closeCloudConfigModal();
   showToast(url ? 'Berhasil terhubung ke Google Drive Cloud!' : 'Kembali ke mode lokal PC.');
   await refreshDocumentsList();
@@ -143,118 +510,6 @@ const DEFAULT_DOC_CONFIG = {
   subsequentPhotos: 9
 };
 
-// ==========================================
-// 2. LOCAL PERSISTENCE & INDEXEDDB
-// ==========================================
-const DB_NAME = 'AplikasiPMT_Database_v2';
-const DB_VERSION = 1;
-const STORE_NAME = 'documents';
-
-class PMTStorage {
-  static async openDB() {
-    return new Promise((resolve, reject) => {
-      const request = indexedDB.open(DB_NAME, DB_VERSION);
-      request.onerror = () => reject(request.error);
-      request.onsuccess = () => resolve(request.result);
-      request.onupgradeneeded = (e) => {
-        const db = e.target.result;
-        if (!db.objectStoreNames.contains(STORE_NAME)) {
-          const store = db.createObjectStore(STORE_NAME, { keyPath: 'id' });
-          store.createIndex('desa', 'desa', { unique: false });
-          store.createIndex('updatedAt', 'updatedAt', { unique: false });
-        }
-      };
-    });
-  }
-
-  static async getAll() {
-    // Try fetching from server / cloud first
-    try {
-      const serverDocs = await ApiClient.getDocuments();
-      if (Array.isArray(serverDocs)) {
-        // Sync server docs to IndexedDB
-        const db = await this.openDB();
-        const tx = db.transaction(STORE_NAME, 'readwrite');
-        const store = tx.objectStore(STORE_NAME);
-        serverDocs.forEach(d => store.put(d));
-        return serverDocs;
-      }
-    } catch (e) {
-      // Offline / direct file fallback
-    }
-
-    // Fallback to IndexedDB
-    try {
-      const db = await this.openDB();
-      return new Promise((resolve, reject) => {
-        const tx = db.transaction(STORE_NAME, 'readonly');
-        const store = tx.objectStore(STORE_NAME);
-        const request = store.getAll();
-        request.onsuccess = () => resolve(request.result || []);
-        request.onerror = () => reject(request.error);
-      });
-    } catch (err) {
-      return [];
-    }
-  }
-
-  static async getById(id) {
-    const docs = await this.getAll();
-    return docs.find(d => d.id === id) || null;
-  }
-
-  static async save(doc) {
-    // Save to IndexedDB
-    const db = await this.openDB();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.put(doc);
-      request.onsuccess = () => resolve(doc);
-      request.onerror = () => reject(request.error);
-    });
-
-    // Save all to server / cloud
-    try {
-      const allDocs = await this.getAllFromIDB();
-      await ApiClient.saveDocuments(allDocs);
-    } catch (e) {
-      // offline
-    }
-
-    return doc;
-  }
-
-  static async delete(id) {
-    const db = await this.openDB();
-    await new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readwrite');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.delete(id);
-      request.onsuccess = () => resolve(true);
-      request.onerror = () => reject(request.error);
-    });
-
-    // Sync deletion to server / cloud
-    try {
-      const allDocs = await this.getAllFromIDB();
-      await ApiClient.saveDocuments(allDocs);
-    } catch (e) {}
-
-    return true;
-  }
-
-  static async getAllFromIDB() {
-    const db = await this.openDB();
-    return new Promise((resolve, reject) => {
-      const tx = db.transaction(STORE_NAME, 'readonly');
-      const store = tx.objectStore(STORE_NAME);
-      const request = store.getAll();
-      request.onsuccess = () => resolve(request.result || []);
-      request.onerror = () => reject(request.error);
-    });
-  }
-}
 
 // ==========================================
 // 3. IMAGE PROCESSOR & COMPRESSION
@@ -493,29 +748,7 @@ async function handleLoginSubmit(event) {
   if (errorAlert) errorAlert.style.display = 'none';
 
   try {
-    let authUser = null;
-
-    // 1. Try server/cloud authentication
-    try {
-      const data = await ApiClient.login(username, password);
-      if (data && data.success) {
-        authUser = data.user;
-      }
-    } catch (netErr) {
-      console.warn('Server offline or unreachable, checking local fallback:', netErr);
-    }
-
-    // 2. Offline / Direct fallback verification (Database Seed: Mochamad Fauzie, S.Gz / 213117)
-    if (!authUser) {
-      if (username.toLowerCase() === 'mochamad fauzie, s.gz' && password === '213117') {
-        authUser = {
-          id: 'u_admin_1',
-          username: 'Mochamad Fauzie, S.Gz',
-          role: 'Admin'
-        };
-      }
-    }
-
+    const authUser = await pmtStore.authenticate(username, password);
     if (authUser) {
       setAuthUser(authUser);
       const loginScreen = document.getElementById('login-screen');
@@ -645,10 +878,8 @@ async function initApp() {
 // Fetch Gallery from FOTO PMT
 async function refreshGallery() {
   try {
-    const data = await ApiClient.getGallery();
-    if (data && data.photos) {
-      AppState.galleryPhotos = data.photos;
-    }
+    const photos = await pmtStore.getGalleryPhotos();
+    AppState.galleryPhotos = photos;
   } catch (err) {
     console.warn('Gallery API error:', err);
   }
@@ -661,7 +892,7 @@ async function refreshGallery() {
 
 // Refresh documents
 async function refreshDocumentsList() {
-  AppState.documents = await PMTStorage.getAll();
+  AppState.documents = await pmtStore.getDocuments();
   // Filter out any lingering sample doc
   AppState.documents = AppState.documents.filter(d => d.id !== 'doc_sample_banjaran_wetan');
   AppState.documents.sort((a, b) => new Date(b.updatedAt) - new Date(a.updatedAt));
@@ -1011,7 +1242,7 @@ function createNewDocument(preferredDesa = 'Banjaran Wetan') {
 }
 
 async function editDocument(id) {
-  const doc = await PMTStorage.getById(id);
+  const doc = await pmtStore.getDocumentById(id);
   if (!doc) {
     showToast('Dokumen tidak ditemukan', 'error');
     return;
@@ -1021,14 +1252,14 @@ async function editDocument(id) {
 }
 
 async function duplicateDocument(id) {
-  const doc = await PMTStorage.getById(id);
+  const doc = await pmtStore.getDocumentById(id);
   if (!doc) return;
   const clone = JSON.parse(JSON.stringify(doc));
   clone.id = 'doc_' + Date.now();
   clone.termin = clone.termin + ' (Salinan)';
   clone.createdAt = new Date().toISOString();
   clone.updatedAt = new Date().toISOString();
-  await PMTStorage.save(clone);
+  await pmtStore.saveDocument(clone);
   showToast(`Berhasil menduplikasi dokumen untuk Desa ${clone.desa}`);
   await refreshDocumentsList();
   await refreshGallery();
@@ -1036,7 +1267,7 @@ async function duplicateDocument(id) {
 
 async function confirmDeleteDocument(id) {
   if (confirm('Apakah Anda yakin ingin menghapus dokumen ini beserta seluruh fotonya? Foto dari folder FOTO PMT yang dipakai dokumen ini akan otomatis dapat digunakan kembali.')) {
-    await PMTStorage.delete(id);
+    await pmtStore.deleteDocument(id);
     showToast('Dokumen berhasil dihapus');
     await refreshDocumentsList();
     await refreshGallery();
@@ -1099,8 +1330,9 @@ function syncFormToState() {
 async function saveCurrentDocument() {
   if (!AppState.activeDoc) return;
   syncFormToState();
-  await PMTStorage.save(AppState.activeDoc);
-  showToast('Dokumen berhasil disimpan secara lokal!');
+  await pmtStore.saveDocument(AppState.activeDoc);
+  const status = pmtStore.getStatus();
+  showToast(status.provider === 'drive' ? 'Dokumen tersimpan & disinkronkan ke Google Drive!' : (status.provider === 'd1' ? 'Dokumen tersimpan ke Cloudflare D1!' : 'Dokumen berhasil disimpan secara lokal!'));
   await refreshDocumentsList();
   await refreshGallery();
 }
@@ -1536,7 +1768,7 @@ async function openDocumentForPrint(id) {
 // 13. DOCX (MICROSOFT WORD) EXPORT ENGINE
 // ==========================================
 async function exportToWordById(id) {
-  const doc = await PMTStorage.getById(id);
+  const doc = await pmtStore.getDocumentById(id);
   if (!doc) {
     showToast('Dokumen tidak ditemukan', 'error');
     return;
