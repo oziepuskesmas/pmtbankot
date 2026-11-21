@@ -23,8 +23,24 @@ class D1BackendAdapter {
     this.apiBase = apiBase;
   }
 
+  getAuthHeaders() {
+    try {
+      const raw = localStorage.getItem('pmt_auth_user');
+      if (raw) {
+        const u = JSON.parse(raw);
+        if (u && u.token) return { 'Authorization': `Bearer ${u.token}` };
+      }
+    } catch (e) {}
+    return {};
+  }
+
   async getDocuments() {
-    const res = await fetch(`${this.apiBase}/api/documents`);
+    const res = await fetch(`${this.apiBase}/api/documents`, {
+      headers: {
+        'Accept': 'application/json',
+        ...this.getAuthHeaders()
+      }
+    });
     if (!res.ok) throw new Error(`D1 HTTP ${res.status}`);
     const data = await res.json();
     return Array.isArray(data) ? data : [];
@@ -33,7 +49,10 @@ class D1BackendAdapter {
   async saveDocuments(docs) {
     const res = await fetch(`${this.apiBase}/api/documents`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getAuthHeaders()
+      },
       body: JSON.stringify(docs)
     });
     if (!res.ok) throw new Error(`D1 HTTP ${res.status}`);
@@ -41,7 +60,9 @@ class D1BackendAdapter {
   }
 
   async getGallery() {
-    const res = await fetch(`${this.apiBase}/api/gallery`);
+    const res = await fetch(`${this.apiBase}/api/gallery`, {
+      headers: { ...this.getAuthHeaders() }
+    });
     if (!res.ok) throw new Error(`D1 HTTP ${res.status}`);
     return await res.json();
   }
@@ -418,7 +439,9 @@ class PMTDataStore {
         result = await this.d1Adapter.login(u, p);
       }
       if (result && result.success && result.user) {
-        return result.user;
+        const userObj = { ...result.user };
+        if (result.token) userObj.token = result.token;
+        return userObj;
       }
     } catch (netErr) {
       console.warn('Autentikasi remote gagal, memeriksa akun offline:', netErr);
@@ -430,7 +453,8 @@ class PMTDataStore {
         id: 'u_admin_1',
         username: 'Mochamad Fauzie, S.Gz',
         role: 'Admin',
-        puskesmas: 'Puskesmas Banjaran Kota'
+        puskesmas: 'Puskesmas Banjaran Kota',
+        token: 'offline_session_token'
       };
     }
 
@@ -605,6 +629,17 @@ const AppState = {
   galleryFilterStatus: 'UNUSED',
   selectedModalPhotos: new Set()
 };
+
+// Security: HTML Entity Sanitizer to prevent Stored & Reflected DOM XSS
+function escapeHtml(str) {
+  if (str === null || str === undefined) return '';
+  return String(str)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#039;');
+}
 
 // UI Helper: Toast
 function showToast(message, type = 'success') {
@@ -1176,19 +1211,24 @@ function renderDocumentList() {
       thumbStripHtml += `<div class="doc-thumb-more">+${photoCount - 4}</div>`;
     }
 
+    const safeId = escapeHtml(doc.id).replace(/[^a-zA-Z0-9_-]/g, '');
+    const safeDesa = escapeHtml(doc.desa || '');
+    const safeTermin = escapeHtml(doc.termin || '');
+    const safeTanggal = escapeHtml(doc.tanggalCustom || 'Belum diisi rentang tanggal');
+
     html += `
       <div class="doc-card">
-        <div class="doc-card-body" onclick="editDocument('${doc.id}')" title="Klik untuk membuka dan mengedit">
+        <div class="doc-card-body" onclick="editDocument('${safeId}')" title="Klik untuk membuka dan mengedit">
           <div class="doc-card-top">
             <div class="doc-card-badge">
               <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17.657 16.657L13.414 20.9a1.998 1.998 0 01-2.827 0l-4.244-4.243a8 8 0 1111.314 0z"></path></svg>
-              Desa ${doc.desa}
+              Desa ${safeDesa}
             </div>
             <span class="doc-card-pages-badge">${pageCount} Halaman A4</span>
           </div>
 
-          <div class="doc-card-title">${doc.termin}</div>
-          <div class="doc-card-date">${doc.tanggalCustom || 'Belum diisi rentang tanggal'}</div>
+          <div class="doc-card-title">${safeTermin}</div>
+          <div class="doc-card-date">${safeTanggal}</div>
 
           ${photoCount > 0 ? `<div class="doc-thumb-strip">${thumbStripHtml}</div>` : ''}
 
@@ -1198,20 +1238,20 @@ function renderDocumentList() {
         </div>
 
         <div class="doc-card-footer">
-          <button class="btn btn-primary btn-sm" onclick="openDocumentForPrint('${doc.id}')" title="Buka & Cetak / Simpan PDF">
+          <button class="btn btn-primary btn-sm" onclick="openDocumentForPrint('${safeId}')" title="Buka & Cetak / Simpan PDF">
             <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z"></path></svg>
             Cetak / PDF
           </button>
 
           <div class="doc-card-actions">
-            <button class="btn btn-secondary btn-sm" onclick="exportToWordById('${doc.id}')" title="Unduh File Word (.docx)">
+            <button class="btn btn-secondary btn-sm" onclick="exportToWordById('${safeId}')" title="Unduh File Word (.docx)">
               <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
               Word (.docx)
             </button>
-            <button class="btn btn-secondary btn-sm btn-icon" onclick="duplicateDocument('${doc.id}')" title="Duplikat Dokumen">
+            <button class="btn btn-secondary btn-sm btn-icon" onclick="duplicateDocument('${safeId}')" title="Duplikat Dokumen">
               <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"></path></svg>
             </button>
-            <button class="btn btn-danger btn-sm btn-icon" onclick="confirmDeleteDocument('${doc.id}')" title="Hapus Dokumen">
+            <button class="btn btn-danger btn-sm btn-icon" onclick="confirmDeleteDocument('${safeId}')" title="Hapus Dokumen">
               <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
             </button>
           </div>
@@ -1731,11 +1771,11 @@ function renderPrintPreview() {
       <div class="document-sheet" id="print-sheet-${pageNum}">
         ${isFirstPage ? `
           <div class="document-sheet-header">
-            <div class="doc-header-line-1">${doc.judul || 'DOKUMENTASI KEGIATAN'}</div>
-            <div class="doc-header-line-2">${doc.subJudul || 'PMT LOKAL IBU HAMIL KEK DAN BALITA BERMASALAH GIZI'}</div>
-            <div class="doc-header-line-3">DESA ${doc.desa ? doc.desa.toUpperCase() : ''}</div>
-            <div class="doc-header-line-4">${doc.termin ? doc.termin.toUpperCase() : ''}</div>
-            <div class="doc-header-line-5">${doc.tanggalCustom ? doc.tanggalCustom.toUpperCase() : ''}</div>
+            <div class="doc-header-line-1">${escapeHtml(doc.judul || 'DOKUMENTASI KEGIATAN')}</div>
+            <div class="doc-header-line-2">${escapeHtml(doc.subJudul || 'PMT LOKAL IBU HAMIL KEK DAN BALITA BERMASALAH GIZI')}</div>
+            <div class="doc-header-line-3">DESA ${escapeHtml(doc.desa ? doc.desa.toUpperCase() : '')}</div>
+            <div class="doc-header-line-4">${escapeHtml(doc.termin ? doc.termin.toUpperCase() : '')}</div>
+            <div class="doc-header-line-5">${escapeHtml(doc.tanggalCustom ? doc.tanggalCustom.toUpperCase() : '')}</div>
           </div>
         ` : ''}
 
