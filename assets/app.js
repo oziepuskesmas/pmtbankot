@@ -7,7 +7,7 @@
 // ==========================================
 // 1. CONSTANTS & SYSTEM CONFIGURATION
 // ==========================================
-const API_BASE = (window.location.protocol === 'file:' || window.location.port !== '3800') ? 'http://localhost:3800' : '';
+const API_BASE = (window.location.protocol === 'file:') ? 'http://localhost:3800' : '';
 const CLOUD_SCRIPT_KEY = 'pmt_cloud_script_url';
 
 function getCloudScriptUrl() {
@@ -239,10 +239,6 @@ class PMTStorage {
     try {
       const allDocs = await this.getAllFromIDB();
       await ApiClient.saveDocuments(allDocs);
-    } catch (e) {}
-
-    return true;
-  }
     } catch (e) {}
 
     return true;
