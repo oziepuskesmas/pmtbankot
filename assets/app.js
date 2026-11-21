@@ -9,6 +9,7 @@
 // ==========================================
 const API_BASE = (window.location.protocol === 'file:') ? 'http://localhost:3800' : '';
 const CLOUD_SCRIPT_KEY = 'pmt_cloud_script_url';
+const DEFAULT_CLOUD_SCRIPT_URL = 'https://script.google.com/macros/s/AKfycbxTrF2uS-vddZMHydebLQp2GTiWH5c7EVCiYEM-Pw6IFk0r29pBkJmh787Koir_xdlNmw/exec';
 
 // ==========================================
 // 1. PERSISTENCE ENGINE & DATA STORE (DEEP MODULE)
@@ -216,14 +217,16 @@ class PMTDataStore {
 
   // --- Provider & Configuration ---
   getDriveUrl() {
-    return localStorage.getItem(this.cloudScriptKey) || '';
+    const saved = localStorage.getItem(this.cloudScriptKey);
+    if (saved === 'LOCAL') return '';
+    return saved || DEFAULT_CLOUD_SCRIPT_URL;
   }
 
   setDriveUrl(url) {
     if (url && url.trim()) {
       localStorage.setItem(this.cloudScriptKey, url.trim());
     } else {
-      localStorage.removeItem(this.cloudScriptKey);
+      localStorage.setItem(this.cloudScriptKey, 'LOCAL');
     }
     this.updateProviderStatusUI();
   }
