@@ -242,12 +242,39 @@ export default {
       }
     }
 
-    // 5. API: GET /api/gallery (Fallback untuk Cloudflare Pages)
+    // 5. API: DELETE /api/documents (Hapus dokumen dari Cloudflare D1)
+    if (url.pathname === '/api/documents' && request.method === 'DELETE') {
+      try {
+        const authUser = await authenticateRequest(request, env);
+        if (!authUser) {
+          return new Response(JSON.stringify({ success: false, message: 'Autentikasi diperlukan untuk menghapus dokumen.' }), { status: 401, headers });
+        }
+
+        const id = url.searchParams.get('id');
+        if (!id) {
+          return new Response(JSON.stringify({ success: false, message: 'Parameter id dokumen wajib disertakan.' }), { status: 400, headers });
+        }
+
+        if (env.DB) {
+          if (id === 'all') {
+            await env.DB.prepare('DELETE FROM documents').run();
+          } else {
+            await env.DB.prepare('DELETE FROM documents WHERE id = ?').bind(id).run();
+          }
+        }
+
+        return new Response(JSON.stringify({ success: true, id }), { headers });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
+      }
+    }
+
+    // 6. API: GET /api/gallery (Fallback untuk Cloudflare Pages)
     if (url.pathname === '/api/gallery' && request.method === 'GET') {
       return new Response(JSON.stringify({ success: true, photos: [] }), { headers });
     }
 
-    // 6. Fallback: Sajikan file statis (HTML, CSS, JS) via Cloudflare Pages
+    // 7. Fallback: Sajikan file statis (HTML, CSS, JS) via Cloudflare Pages
     if (env.ASSETS) {
       const assetRes = await env.ASSETS.fetch(request);
       const newHeaders = new Headers(assetRes.headers);

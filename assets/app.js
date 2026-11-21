@@ -59,6 +59,23 @@ class D1BackendAdapter {
     return true;
   }
 
+  async deleteDocument(id) {
+    if (!id) return false;
+    try {
+      const res = await fetch(`${this.apiBase}/api/documents?id=${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+        headers: {
+          'Accept': 'application/json',
+          ...this.getAuthHeaders()
+        }
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('D1 deleteDocument error:', e);
+      return false;
+    }
+  }
+
   async getGallery() {
     const res = await fetch(`${this.apiBase}/api/gallery`, {
       headers: { ...this.getAuthHeaders() }
@@ -102,11 +119,33 @@ class DriveBackendAdapter {
   async saveDocuments(docs) {
     const url = this.getScriptUrl();
     if (!url) return false;
-    const res = await fetch(url, {
-      method: 'POST',
-      body: JSON.stringify({ action: 'saveDocuments', documents: docs })
-    });
-    return res.ok;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'saveDocuments', documents: docs })
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Drive saveDocuments error:', e);
+      return false;
+    }
+  }
+
+  async deleteDocument(id) {
+    const url = this.getScriptUrl();
+    if (!url) return false;
+    try {
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+        body: JSON.stringify({ action: 'deleteDocument', id: id })
+      });
+      return res.ok;
+    } catch (e) {
+      console.warn('Drive deleteDocument error:', e);
+      return false;
+    }
   }
 
   async getGallery() {
@@ -205,6 +244,21 @@ class IndexedDBStorageAdapter {
     });
   }
 
+  async replaceAll(docs) {
+    if (!Array.isArray(docs)) return;
+    const db = await this.getDB();
+    return new Promise((resolve, reject) => {
+      const tx = db.transaction(this.storeName, 'readwrite');
+      const store = tx.objectStore(this.storeName);
+      store.clear();
+      for (const doc of docs) {
+        store.put(doc);
+      }
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => reject(tx.error);
+    });
+  }
+
   async delete(id) {
     const db = await this.getDB();
     return new Promise((resolve, reject) => {
@@ -287,27 +341,34 @@ class PMTDataStore {
   // --- Document Interface (Deep Methods) ---
   async getDocuments(filter = {}) {
     let docs = [];
+    let remoteSuccess = false;
 
     // 1. Try remote provider (Drive or D1)
     try {
       if (this.driveAdapter.isConfigured) {
         const driveDocs = await this.driveAdapter.getDocuments();
-        if (Array.isArray(driveDocs)) docs = driveDocs;
+        if (Array.isArray(driveDocs)) {
+          docs = driveDocs;
+          remoteSuccess = true;
+        }
       } else {
         const d1Docs = await this.d1Adapter.getDocuments();
-        if (Array.isArray(d1Docs)) docs = d1Docs;
+        if (Array.isArray(d1Docs)) {
+          docs = d1Docs;
+          remoteSuccess = true;
+        }
       }
 
-      // Mirror to local IndexedDB
-      if (docs.length > 0) {
-        await this.idbAdapter.putBatch(docs);
+      // Mirror to local IndexedDB if remote sync succeeded
+      if (remoteSuccess) {
+        await this.idbAdapter.replaceAll(docs);
       }
     } catch (netErr) {
       console.warn('Sinkronisasi cloud terhambat, membaca data lokal:', netErr);
     }
 
-    // 2. Fallback to local storage if remote returned nothing or failed
-    if (docs.length === 0) {
+    // 2. Fallback to local storage ONLY if remote request failed (offline)
+    if (!remoteSuccess) {
       docs = await this.idbAdapter.getAll();
     }
 
@@ -349,9 +410,8 @@ class PMTDataStore {
       const allDocs = await this.idbAdapter.getAll();
       if (this.driveAdapter.isConfigured) {
         await this.driveAdapter.saveDocuments(allDocs);
-      } else {
-        await this.d1Adapter.saveDocuments(allDocs);
       }
+      await this.d1Adapter.saveDocuments(allDocs);
     } catch (syncErr) {
       console.warn('Sinkronisasi cloud ditunda (offline):', syncErr);
     }
@@ -361,14 +421,16 @@ class PMTDataStore {
 
   async deleteDocument(id) {
     if (!id) return false;
+    // 1. Local delete
     await this.idbAdapter.delete(id);
 
+    // 2. Remote delete across D1 and Drive
     try {
-      const allDocs = await this.idbAdapter.getAll();
+      await this.d1Adapter.deleteDocument(id);
       if (this.driveAdapter.isConfigured) {
-        await this.driveAdapter.saveDocuments(allDocs);
-      } else {
-        await this.d1Adapter.saveDocuments(allDocs);
+        const remainingDocs = await this.idbAdapter.getAll();
+        await this.driveAdapter.saveDocuments(remainingDocs);
+        await this.driveAdapter.deleteDocument(id);
       }
     } catch (syncErr) {
       console.warn('Sinkronisasi penghapusan ditunda:', syncErr);
@@ -1310,6 +1372,9 @@ async function duplicateDocument(id) {
 
 async function confirmDeleteDocument(id) {
   if (confirm('Apakah Anda yakin ingin menghapus dokumen ini beserta seluruh fotonya? Foto dari folder FOTO PMT yang dipakai dokumen ini akan otomatis dapat digunakan kembali.')) {
+    if (AppState.activeDoc && AppState.activeDoc.id === id) {
+      AppState.activeDoc = null;
+    }
     await pmtStore.deleteDocument(id);
     showToast('Dokumen berhasil dihapus');
     await refreshDocumentsList();
