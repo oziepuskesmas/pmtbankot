@@ -858,6 +858,27 @@ function escapeHtml(str) {
     .replace(/'/g, '&#039;');
 }
 
+// Helper: Optimasi URL Foto Google Drive (menggunakan CDN berkecepatan tinggi lh3.googleusercontent.com)
+function getOptimalPhotoUrl(photo) {
+  if (!photo) return '';
+  if (photo.dataUrl && photo.dataUrl.startsWith('data:')) {
+    return photo.dataUrl;
+  }
+  let fileId = photo.fileId;
+  if (!fileId && photo.url) {
+    const m = photo.url.match(/[?&]id=([a-zA-Z0-9_-]+)/) || photo.url.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (m) fileId = m[1];
+  }
+  if (!fileId && photo.dataUrl) {
+    const m = photo.dataUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/) || photo.dataUrl.match(/\/d\/([a-zA-Z0-9_-]+)/);
+    if (m) fileId = m[1];
+  }
+  if (fileId) {
+    return `https://lh3.googleusercontent.com/d/${fileId}=w1000`;
+  }
+  return photo.dataUrl || photo.url || '';
+}
+
 // UI Helper: Toast
 function showToast(message, type = 'success') {
   const container = document.getElementById('toast-container');
@@ -1924,14 +1945,15 @@ async function addSelectedPhotosToDocument() {
     const newPhotos = [];
     for (let i = 0; i < selectedPhotoObjects.length; i++) {
       const p = selectedPhotoObjects[i];
-      const fullUrl = p.url.startsWith('http') ? p.url : `${API_BASE}${p.url}`;
+      const fileId = p.fileId;
+      const cdnUrl = fileId ? `https://lh3.googleusercontent.com/d/${fileId}=w1000` : (p.url.startsWith('http') ? p.url : `${API_BASE}${p.url}`);
       newPhotos.push({
         id: 'photo_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5),
         filename: p.filename,
         galleryPath: p.relativePath,
         fileId: p.fileId,
-        url: fullUrl,
-        dataUrl: fullUrl,
+        url: cdnUrl,
+        dataUrl: cdnUrl,
         rotation: 0
       });
     }
@@ -2037,7 +2059,7 @@ function renderPhotoThumbnails() {
 
     html += `
       <div class="photo-thumb-card" data-index="${idx}">
-        <img src="${photo.dataUrl}" alt="Foto ${idx + 1}" loading="lazy">
+        <img src="${getOptimalPhotoUrl(photo)}" alt="Foto ${idx + 1}" loading="lazy">
         <span class="photo-thumb-badge">#${idx + 1}</span>
         <span class="photo-thumb-page-badge">Hal ${pageNum}</span>
         <div class="photo-thumb-actions">
@@ -2142,11 +2164,22 @@ function renderPrintPreview() {
         ` : ''}
 
         <div class="document-photo-grid ${isFirstPage ? 'grid-page-1' : 'grid-subsequent'}">
-          ${pagePhotos.map((photo, pIdx) => `
-            <div class="photo-cell">
-              <img src="${photo.dataUrl}" alt="Dokumentasi ${(pageIndex === 0 ? pIdx + 1 : 6 + (pageIndex - 1) * 9 + pIdx + 1)}">
-            </div>
-          `).join('')}
+          ${pagePhotos.map((photo, pIdx) => {
+            const fileId = photo.fileId || (photo.dataUrl && (photo.dataUrl.match(/[?&]id=([a-zA-Z0-9_-]+)/) || photo.dataUrl.match(/\/d\/([a-zA-Z0-9_-]+)/))?.[1]) || '';
+            const photoUrl = getOptimalPhotoUrl(photo);
+            const imgNum = (pageIndex === 0 ? pIdx + 1 : 6 + (pageIndex - 1) * 9 + pIdx + 1);
+            return `
+              <div class="photo-cell">
+                <img 
+                  src="${photoUrl}" 
+                  alt="Dokumentasi ${imgNum}"
+                  data-fileid="${fileId}"
+                  loading="eager"
+                  onerror="if(this.dataset.retry !== '1' && this.dataset.fileid){ this.dataset.retry='1'; this.src='https://drive.google.com/thumbnail?id='+this.dataset.fileid+'&sz=w1000'; }"
+                >
+              </div>
+            `;
+          }).join('')}
         </div>
 
         <div class="sheet-page-indicator">Halaman ${pageNum} dari ${totalPages}</div>
@@ -2158,15 +2191,97 @@ function renderPrintPreview() {
   applyZoom();
 }
 
-function triggerPrint() {
-  window.print();
+async function triggerPrint() {
+  const printBtn = document.querySelector('button[onclick="triggerPrint()"]');
+  const originalHtml = printBtn ? printBtn.innerHTML : '';
+
+  if (printBtn) {
+    printBtn.disabled = true;
+    printBtn.innerHTML = `
+      <svg width="15" height="15" fill="none" viewBox="0 0 24 24" style="animation: spin 1s linear infinite; margin-right: 0.35rem; display: inline-block;">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" style="opacity: 0.25;"></circle>
+        <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+      </svg>
+      Menyiapkan Foto...
+    `;
+  }
+
+  try {
+    const container = document.getElementById('print-preview-sheets');
+    if (!container) {
+      window.print();
+      return;
+    }
+
+    const images = Array.from(container.querySelectorAll('img'));
+    if (images.length === 0) {
+      window.print();
+      return;
+    }
+
+    showToast(`Memeriksa dan memuat ${images.length} foto untuk cetak...`);
+
+    // Preload & wait for ALL images to fully load and decode
+    await Promise.allSettled(
+      images.map(img => {
+        return new Promise((resolve) => {
+          if (img.complete && img.naturalWidth > 0) {
+            if (img.decode) {
+              img.decode().then(resolve).catch(resolve);
+            } else {
+              resolve();
+            }
+            return;
+          }
+
+          let resolved = false;
+          const finish = () => {
+            if (resolved) return;
+            resolved = true;
+            if (img.decode) {
+              img.decode().then(resolve).catch(resolve);
+            } else {
+              resolve();
+            }
+          };
+
+          img.addEventListener('load', finish, { once: true });
+          img.addEventListener('error', () => {
+            const fileId = img.dataset.fileid;
+            if (fileId && !img.dataset.fallbackTried) {
+              img.dataset.fallbackTried = '1';
+              img.src = `https://drive.google.com/thumbnail?id=${fileId}&sz=w1000`;
+              img.addEventListener('load', finish, { once: true });
+              img.addEventListener('error', finish, { once: true });
+            } else {
+              finish();
+            }
+          }, { once: true });
+
+          // Timeout 8 detik agar tidak macet jika koneksi internet lambat
+          setTimeout(finish, 8000);
+        });
+      })
+    );
+
+    // Buffer 300ms agar rendering engine browser selesai me-rasterize gambar
+    await new Promise(r => setTimeout(r, 300));
+
+    window.print();
+  } catch (err) {
+    console.warn('Error preparing print images:', err);
+    window.print();
+  } finally {
+    if (printBtn) {
+      printBtn.disabled = false;
+      printBtn.innerHTML = originalHtml;
+    }
+  }
 }
 
 async function openDocumentForPrint(id) {
   await editDocument(id);
-  setTimeout(() => {
-    window.print();
-  }, 450);
+  await triggerPrint();
 }
 
 // ==========================================
