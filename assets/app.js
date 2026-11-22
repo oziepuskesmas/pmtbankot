@@ -343,34 +343,38 @@ class PMTDataStore {
     let docs = [];
     let remoteSuccess = false;
 
-    // 1. Try remote provider (Drive or D1)
+    // 1. Prioritize Cloudflare D1 (Blazing fast ~50ms)
     try {
+      const d1Docs = await this.d1Adapter.getDocuments();
+      if (Array.isArray(d1Docs)) {
+        docs = d1Docs;
+        remoteSuccess = true;
+      }
+    } catch (d1Err) {
+      console.warn('D1 tidak dapat diakses, mencoba Drive jika tersedia:', d1Err);
       if (this.driveAdapter.isConfigured) {
-        const driveDocs = await this.driveAdapter.getDocuments();
-        if (Array.isArray(driveDocs)) {
-          docs = driveDocs;
-          remoteSuccess = true;
-        }
-      } else {
-        const d1Docs = await this.d1Adapter.getDocuments();
-        if (Array.isArray(d1Docs)) {
-          docs = d1Docs;
-          remoteSuccess = true;
+        try {
+          const driveDocs = await this.driveAdapter.getDocuments();
+          if (Array.isArray(driveDocs)) {
+            docs = driveDocs;
+            remoteSuccess = true;
+          }
+        } catch (driveErr) {
+          console.warn('Drive fallback error:', driveErr);
         }
       }
-
-      // Mirror to local IndexedDB if remote sync succeeded
-      if (remoteSuccess) {
-        await this.idbAdapter.replaceAll(docs);
-      }
-    } catch (netErr) {
-      console.warn('Sinkronisasi cloud terhambat, membaca data lokal:', netErr);
     }
 
-    // 2. Fallback to local storage ONLY if remote request failed (offline)
-    if (!remoteSuccess) {
+    // Mirror to local IndexedDB if remote sync succeeded
+    if (remoteSuccess) {
+      await this.idbAdapter.replaceAll(docs);
+    } else {
+      // Fallback to local storage ONLY if remote request failed (offline)
       docs = await this.idbAdapter.getAll();
     }
+
+    // Filter out Mekarsari if any legacy documents exist
+    docs = docs.filter(d => !d.desa || d.desa.toLowerCase() !== 'mekarsari');
 
     // 3. Filter options
     if (filter.desa && filter.desa !== 'ALL') {
@@ -402,18 +406,22 @@ class PMTDataStore {
     doc.updatedAt = new Date().toISOString();
     if (!doc.createdAt) doc.createdAt = doc.updatedAt;
 
-    // 1. Local persistence
+    // 1. Local persistence (Instant)
     await this.idbAdapter.put(doc);
 
-    // 2. Remote background sync
+    // 2. Remote D1 Primary Sync (Blazing fast)
     try {
       const allDocs = await this.idbAdapter.getAll();
-      if (this.driveAdapter.isConfigured) {
-        await this.driveAdapter.saveDocuments(allDocs);
-      }
       await this.d1Adapter.saveDocuments(allDocs);
+
+      // 3. Background non-blocking backup ke Google Drive
+      if (this.driveAdapter.isConfigured) {
+        this.driveAdapter.saveDocuments(allDocs).catch(err => {
+          console.warn('Drive backup background ditunda:', err);
+        });
+      }
     } catch (syncErr) {
-      console.warn('Sinkronisasi cloud ditunda (offline):', syncErr);
+      console.warn('Sinkronisasi D1 ditunda (offline):', syncErr);
     }
 
     return doc;
@@ -429,8 +437,8 @@ class PMTDataStore {
       await this.d1Adapter.deleteDocument(id);
       if (this.driveAdapter.isConfigured) {
         const remainingDocs = await this.idbAdapter.getAll();
-        await this.driveAdapter.saveDocuments(remainingDocs);
-        await this.driveAdapter.deleteDocument(id);
+        this.driveAdapter.saveDocuments(remainingDocs).catch(() => {});
+        this.driveAdapter.deleteDocument(id).catch(() => {});
       }
     } catch (syncErr) {
       console.warn('Sinkronisasi penghapusan ditunda:', syncErr);
@@ -439,8 +447,35 @@ class PMTDataStore {
     return true;
   }
 
-  // --- Gallery Interface (With automated photo usage reconciliation) ---
-  async getGalleryPhotos(desaFilter = 'ALL') {
+  // --- Gallery Interface (With automated photo usage reconciliation & Stale-While-Revalidate Cache) ---
+  async getGalleryPhotos(forceRefresh = false) {
+    // 1. Ambil dari memori jika tersedia dan tidak dipaksa refresh
+    if (!forceRefresh && this.cachedGallery && this.cachedGallery.length > 0) {
+      return await this.reconcilePhotoUsage(this.cachedGallery);
+    }
+
+    // 2. Ambil dari cache localStorage seketika (0 ms!)
+    if (!forceRefresh) {
+      try {
+        const localCached = localStorage.getItem('pmt_cached_gallery');
+        if (localCached) {
+          const parsed = JSON.parse(localCached);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            this.cachedGallery = parsed;
+            // Jalankan sinkronisasi background diam-diam
+            this.syncGalleryBackground().catch(() => {});
+            return await this.reconcilePhotoUsage(this.cachedGallery);
+          }
+        }
+      } catch (e) {}
+    }
+
+    // 3. Ambil data dari cloud
+    const photos = await this.syncGalleryBackground();
+    return await this.reconcilePhotoUsage(photos);
+  }
+
+  async syncGalleryBackground() {
     let rawPhotos = [];
     try {
       if (this.driveAdapter.isConfigured) {
@@ -454,9 +489,20 @@ class PMTDataStore {
       console.warn('Galeri foto tidak dapat diakses:', err);
     }
 
-    this.cachedGallery = rawPhotos;
+    if (rawPhotos.length > 0) {
+      // Filter out any photos from Mekarsari
+      rawPhotos = rawPhotos.filter(p => p.desa && p.desa.toLowerCase() !== 'mekarsari');
+      this.cachedGallery = rawPhotos;
+      try {
+        localStorage.setItem('pmt_cached_gallery', JSON.stringify(rawPhotos));
+      } catch (e) {}
+    }
 
-    // Hitung status pemakaian foto secara terpusat
+    return this.cachedGallery || [];
+  }
+
+  async reconcilePhotoUsage(rawPhotos) {
+    if (!Array.isArray(rawPhotos)) return [];
     const allDocs = await this.idbAdapter.getAll();
     const photoUsageMap = new Map();
     for (const doc of allDocs) {
@@ -480,9 +526,6 @@ class PMTDataStore {
       };
     });
 
-    if (desaFilter && desaFilter !== 'ALL') {
-      return annotatedPhotos.filter(p => p.desa && p.desa.toLowerCase() === desaFilter.toLowerCase());
-    }
     return annotatedPhotos;
   }
 
@@ -583,12 +626,11 @@ async function saveCloudConfig() {
 }
 
 const VILLAGES = [
-  'Banjaran Wetan',
   'Banjaran Kulon',
+  'Banjaran Wetan',
+  'Ciapus',
   'Mekarjaya',
-  'Mekarsari',
-  'Tarajusari',
-  'Ciapus'
+  'Tarajusari'
 ];
 
 const DEFAULT_DOC_CONFIG = {
@@ -856,11 +898,11 @@ async function handleLoginSubmit(event) {
       if (loginScreen) loginScreen.style.display = 'none';
       if (appEl) appEl.style.display = 'flex';
       
-      // Load user documents and gallery
+      // Load user documents and gallery instantly
       renderSidebar();
       await refreshDocumentsList();
-      await refreshGallery();
       showListView();
+      refreshGallery().catch(() => {});
       showToast(`Selamat datang, ${authUser.username}!`);
     } else {
       if (errorAlert) {
@@ -963,8 +1005,8 @@ async function initApp() {
     updateHeaderUserBadge(currentUser);
     renderSidebar();
     await refreshDocumentsList();
-    await refreshGallery();
     showListView();
+    refreshGallery().catch(() => {});
   } else {
     if (loginScreen) loginScreen.style.display = 'flex';
     if (appEl) appEl.style.display = 'none';
@@ -976,10 +1018,12 @@ async function initApp() {
 }
 
 // Fetch Gallery from FOTO PMT
-async function refreshGallery() {
+async function refreshGallery(force = false) {
   try {
-    const photos = await pmtStore.getGalleryPhotos();
+    if (force) showToast('Memeriksa foto terbaru di Google Drive...');
+    const photos = await pmtStore.getGalleryPhotos(force);
     AppState.galleryPhotos = photos;
+    if (force) showToast(`Galeri diperbarui: ${photos.length} foto tersedia.`);
   } catch (err) {
     console.warn('Gallery API error:', err);
   }
@@ -1328,7 +1372,7 @@ function renderDocumentList() {
 // ==========================================
 // 9. EDITOR & FORM CONTROLS
 // ==========================================
-function createNewDocument(preferredDesa = 'Banjaran Wetan') {
+function createNewDocument(preferredDesa = 'Banjaran Kulon') {
   AppState.activeDoc = {
     id: 'doc_' + Date.now(),
     desa: preferredDesa,
@@ -1460,7 +1504,7 @@ async function openPhotoPickerModal() {
   const grid = document.getElementById('modal-picker-grid');
 
   title.innerText = `Pilih Foto untuk Desa ${desa}`;
-  subtitle.innerText = `Folder: FOTO PMT\\${desa.toUpperCase()}`;
+  subtitle.innerHTML = `Folder: FOTO PMT\\${desa.toUpperCase()} &nbsp;&bull;&nbsp; <a href="javascript:void(0)" onclick="refreshPickerPhotos('${desa}')" style="color: var(--teal-600); font-weight: 600; text-decoration: underline;">Segarkan Foto Drive</a>`;
 
   // Filter gallery photos for this village
   const villagePhotos = AppState.galleryPhotos.filter(p => p.desa.toLowerCase() === desa.toLowerCase());
@@ -2207,5 +2251,10 @@ window.fillAdminCredentials = fillAdminCredentials;
 window.openCloudConfigModal = openCloudConfigModal;
 window.closeCloudConfigModal = closeCloudConfigModal;
 window.saveCloudConfig = saveCloudConfig;
+window.refreshPickerPhotos = async function(desa) {
+  showToast('Memeriksa foto terbaru di Google Drive...');
+  await refreshGallery(true);
+  openPhotoPickerModal();
+};
 
 document.addEventListener('DOMContentLoaded', initApp);
