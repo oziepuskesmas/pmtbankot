@@ -101,14 +101,14 @@ export default {
           ).bind(u, p).first();
 
           if (user) {
-            const token = await createToken({ id: user.id, username: user.username, role: user.role || 'Petugas' }, env.AUTH_SECRET || AUTH_SECRET);
+            const token = await createToken({ id: user.id, username: user.username, role: user.role || 'Nutrusionist' }, env.AUTH_SECRET || AUTH_SECRET);
             return new Response(JSON.stringify({
               success: true,
               token,
               user: {
                 id: user.id,
                 username: user.username,
-                role: user.role || 'Petugas',
+                role: user.role || 'Nutrusionist',
                 puskesmas: user.puskesmas || 'Puskesmas Banjaran Kota'
               }
             }), { headers });

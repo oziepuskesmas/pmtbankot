@@ -100,8 +100,9 @@ class D1BackendAdapter {
         ...this.getAuthHeaders()
       }
     });
-    if (!res.ok) throw new Error(`D1 getUsers HTTP ${res.status}`);
-    return await res.json();
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.message || `D1 getUsers HTTP ${res.status}`);
+    return Array.isArray(data) ? data : (data.users || []);
   }
 
   async createUser(userData) {
@@ -113,7 +114,7 @@ class D1BackendAdapter {
       },
       body: JSON.stringify(userData)
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) throw new Error(data.message || `D1 HTTP ${res.status}`);
     return data;
   }
@@ -126,7 +127,7 @@ class D1BackendAdapter {
         ...this.getAuthHeaders()
       }
     });
-    const data = await res.json();
+    const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.success) throw new Error(data.message || `D1 HTTP ${res.status}`);
     return data;
   }
@@ -608,24 +609,33 @@ class PMTDataStore {
     const p = (password || '').trim();
     if (!u || !p) return null;
 
-    // 1. Try remote provider
+    // 1. Primary: Cloudflare D1 Authentication (issues secure signed HMAC token)
     try {
-      let result = null;
-      if (this.driveAdapter.isConfigured) {
-        result = await this.driveAdapter.login(u, p);
-      } else {
-        result = await this.d1Adapter.login(u, p);
-      }
-      if (result && result.success && result.user) {
-        const userObj = { ...result.user };
-        if (result.token) userObj.token = result.token;
+      const d1Result = await this.d1Adapter.login(u, p);
+      if (d1Result && d1Result.success && d1Result.user) {
+        const userObj = { ...d1Result.user };
+        if (d1Result.token) userObj.token = d1Result.token;
         return userObj;
       }
-    } catch (netErr) {
-      console.warn('Autentikasi remote gagal, memeriksa akun offline:', netErr);
+    } catch (d1Err) {
+      console.warn('D1 login error, mencoba fallback:', d1Err);
     }
 
-    // 2. Offline fallback admin verification
+    // 2. Secondary fallback: Drive Adapter
+    if (this.driveAdapter.isConfigured) {
+      try {
+        const driveResult = await this.driveAdapter.login(u, p);
+        if (driveResult && driveResult.success && driveResult.user) {
+          const userObj = { ...driveResult.user };
+          if (driveResult.token) userObj.token = driveResult.token;
+          return userObj;
+        }
+      } catch (driveErr) {
+        console.warn('Drive login error:', driveErr);
+      }
+    }
+
+    // 3. Offline fallback admin verification
     if (u.toLowerCase() === 'mochamad fauzie, s.gz' && p === '213117') {
       return {
         id: 'u_admin_1',
@@ -648,34 +658,24 @@ class PMTDataStore {
       if (this.driveAdapter.isConfigured) {
         return await this.driveAdapter.getUsers();
       }
-      return [];
+      throw e;
     }
   }
 
   async createUser(userData) {
-    let result;
-    try {
-      result = await this.d1Adapter.createUser(userData);
-    } catch (e) {
-      if (!this.driveAdapter.isConfigured) throw e;
-    }
+    const result = await this.d1Adapter.createUser(userData);
     if (this.driveAdapter.isConfigured) {
       this.driveAdapter.createUser(userData).catch(() => {});
     }
-    return result || { success: true };
+    return result;
   }
 
   async deleteUser(id) {
-    let result;
-    try {
-      result = await this.d1Adapter.deleteUser(id);
-    } catch (e) {
-      if (!this.driveAdapter.isConfigured) throw e;
-    }
+    const result = await this.d1Adapter.deleteUser(id);
     if (this.driveAdapter.isConfigured) {
       this.driveAdapter.deleteUser(id).catch(() => {});
     }
-    return result || { success: true };
+    return result;
   }
 }
 
@@ -1115,9 +1115,15 @@ async function initApp() {
   updateCloudStatusUI();
 
   // Authentication check before entering main menu
-  const currentUser = getAuthUser();
+  let currentUser = getAuthUser();
   const loginScreen = document.getElementById('login-screen');
   const appEl = document.getElementById('app');
+
+  // Clear stale session if missing a valid Cloudflare HMAC token so user gets fresh authenticated session
+  if (currentUser && (!currentUser.token || currentUser.token === 'offline_session_token')) {
+    clearAuthUser();
+    currentUser = null;
+  }
 
   if (currentUser) {
     if (loginScreen) loginScreen.style.display = 'none';
