@@ -2503,8 +2503,8 @@ async function loadAndRenderUsersList() {
     const currentAuth = getAuthUser();
 
     let html = `
-      <div style="overflow-x: auto; border: 1px solid var(--slate-200); border-radius: 8px;">
-        <table style="width: 100%; border-collapse: collapse; font-size: 0.8125rem; text-align: left;">
+      <div style="overflow-x: auto; border: 1px solid var(--slate-200); border-radius: 8px; background: #ffffff;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8125rem; text-align: left; background: #ffffff;">
           <thead>
             <tr style="background: var(--slate-100); border-bottom: 1px solid var(--slate-200); color: var(--slate-700);">
               <th style="padding: 0.6rem 0.75rem;">No</th>
