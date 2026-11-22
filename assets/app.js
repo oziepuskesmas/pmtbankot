@@ -1047,6 +1047,41 @@ async function handleLoginSubmit(event) {
   }
 }
 
+async function populateLoginUsersDropdown() {
+  const selectEl = document.getElementById('login-username');
+  if (!selectEl) return;
+
+  const previousValue = selectEl.value;
+
+  try {
+    const users = await pmtStore.getUsers();
+    if (Array.isArray(users) && users.length > 0) {
+      let html = '<option value="" disabled>-- Pilih Nama Pegawai --</option>';
+      users.forEach(u => {
+        const roleLabel = u.role ? ` (${u.role})` : '';
+        html += `<option value="${escapeHtml(u.username)}">${escapeHtml(u.username)}${roleLabel}</option>`;
+      });
+      selectEl.innerHTML = html;
+
+      // Select previous value if still exists, or default to first user
+      if (previousValue && users.some(u => u.username.toLowerCase() === previousValue.toLowerCase())) {
+        selectEl.value = previousValue;
+      } else {
+        selectEl.value = users[0].username;
+      }
+      return;
+    }
+  } catch (err) {
+    console.warn('Gagal memuat daftar pegawai untuk login dropdown:', err);
+  }
+
+  // Fallback default admin jika server belum terhubung
+  selectEl.innerHTML = `
+    <option value="" disabled>-- Pilih Nama Pegawai --</option>
+    <option value="Mochamad Fauzie, S.Gz" selected>Mochamad Fauzie, S.Gz (Admin)</option>
+  `;
+}
+
 function handleLogout() {
   if (confirm('Apakah Anda yakin ingin keluar dari aplikasi?')) {
     clearAuthUser();
@@ -1059,8 +1094,9 @@ function handleLogout() {
     if (appEl) appEl.style.display = 'none';
     if (loginScreen) {
       loginScreen.style.display = 'flex';
-      const userInput = document.getElementById('login-username');
-      if (userInput) userInput.focus();
+      populateLoginUsersDropdown();
+      const pwField = document.getElementById('login-password');
+      if (pwField) pwField.focus();
     }
     showToast('Anda telah keluar dari aplikasi.');
   }
@@ -1136,10 +1172,9 @@ async function initApp() {
   } else {
     if (loginScreen) loginScreen.style.display = 'flex';
     if (appEl) appEl.style.display = 'none';
-    const userInput = document.getElementById('login-username');
-    if (userInput && !userInput.value) {
-      userInput.value = 'Mochamad Fauzie, S.Gz';
-    }
+    await populateLoginUsersDropdown();
+    const pwField = document.getElementById('login-password');
+    if (pwField) pwField.focus();
   }
 }
 
@@ -2598,6 +2633,7 @@ async function handleCreateUserSubmit(event) {
     if (usernameInput) usernameInput.value = '';
     if (passwordInput) passwordInput.value = '';
     await loadAndRenderUsersList();
+    populateLoginUsersDropdown();
   } catch (err) {
     console.error('Gagal membuat akun:', err);
     showToast(`Gagal membuat akun: ${err.message}`, 'error');
@@ -2618,6 +2654,7 @@ async function confirmDeleteUser(id, username) {
       await pmtStore.deleteUser(id);
       showToast(`Akun "${username}" berhasil dihapus.`);
       await loadAndRenderUsersList();
+      populateLoginUsersDropdown();
     } catch (err) {
       console.error('Gagal menghapus akun:', err);
       showToast(`Gagal menghapus akun: ${err.message}`, 'error');
@@ -2664,6 +2701,7 @@ window.confirmRandomPick = confirmRandomPick;
 window.openUserManagementModal = openUserManagementModal;
 window.closeUserManagementModal = closeUserManagementModal;
 window.loadAndRenderUsersList = loadAndRenderUsersList;
+window.populateLoginUsersDropdown = populateLoginUsersDropdown;
 window.handleCreateUserSubmit = handleCreateUserSubmit;
 window.confirmDeleteUser = confirmDeleteUser;
 window.refreshPickerPhotos = async function(desa) {

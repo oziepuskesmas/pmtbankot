@@ -1462,6 +1462,15 @@ body.in-editor .content-area {
   box-sizing: border-box;
 }
 
+select.login-input {
+  cursor: pointer;
+  appearance: auto;
+  -webkit-appearance: auto;
+  font-family: inherit;
+  font-weight: 500;
+  padding-right: 1.5rem;
+}
+
 .login-input:focus {
   outline: none;
   border-color: var(--teal-500);

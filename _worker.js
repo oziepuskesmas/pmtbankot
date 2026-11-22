@@ -139,14 +139,9 @@ export default {
       }
     }
 
-    // 2. API: GET /api/users (Wajib Autentikasi)
+    // 2. API: GET /api/users (Daftar Pegawai Terdaftar untuk Dropdown Login & Admin)
     if (url.pathname === '/api/users' && request.method === 'GET') {
       try {
-        const authUser = await authenticateRequest(request, env);
-        if (!authUser) {
-          return new Response(JSON.stringify({ success: false, message: 'Autentikasi diperlukan.' }), { status: 401, headers });
-        }
-
         if (env.DB) {
           const { results } = await env.DB.prepare('SELECT id, username, role, puskesmas, created_at FROM users ORDER BY id ASC').all();
           return new Response(JSON.stringify(results || []), { headers });
