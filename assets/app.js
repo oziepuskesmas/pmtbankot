@@ -691,6 +691,7 @@ class ImageOptimizer {
   static async rotateImage(dataUrl, angleDegrees = 90) {
     return new Promise((resolve, reject) => {
       const img = new Image();
+      img.crossOrigin = 'anonymous';
       img.onload = () => {
         const canvas = document.createElement('canvas');
         const ctx = canvas.getContext('2d');
@@ -1666,19 +1667,20 @@ async function addSelectedPhotosToDocument() {
   const selectedPhotoObjects = AppState.galleryPhotos.filter(p => selectedIds.includes(p.id));
 
   closePhotoPickerModal();
-  showToast(`Sedang memproses ${selectedPhotoObjects.length} foto ke format cetak...`);
+  showToast(`Menambahkan ${selectedPhotoObjects.length} foto ke dokumen...`);
 
   try {
     const newPhotos = [];
     for (let i = 0; i < selectedPhotoObjects.length; i++) {
       const p = selectedPhotoObjects[i];
       const fullUrl = p.url.startsWith('http') ? p.url : `${API_BASE}${p.url}`;
-      const compressedDataUrl = await ImageOptimizer.compressAndOrient(fullUrl, 1600, 1600, 0.88);
       newPhotos.push({
-        id: 'photo_' + Date.now() + '_' + Math.random().toString(36).substr(2, 5),
+        id: 'photo_' + Date.now() + '_' + i + '_' + Math.random().toString(36).substr(2, 5),
         filename: p.filename,
         galleryPath: p.relativePath,
-        dataUrl: compressedDataUrl,
+        fileId: p.fileId,
+        url: fullUrl,
+        dataUrl: fullUrl,
         rotation: 0
       });
     }
@@ -1691,7 +1693,7 @@ async function addSelectedPhotosToDocument() {
     renderPhotoThumbnails();
     renderPrintPreview();
     await saveCurrentDocument();
-    showToast(`Berhasil menambahkan ${newPhotos.length} foto! Foto kini ditandai sudah digunakan.`);
+    showToast(`Berhasil menambahkan ${newPhotos.length} foto!`);
   } catch (err) {
     console.error('Error adding gallery photos:', err);
     showToast('Gagal memproses beberapa foto', 'error');
@@ -1947,15 +1949,29 @@ async function generateAndDownloadDocx(doc) {
 
     const photos = doc.fotos || [];
 
-    const dataUrlToUint8Array = (dataUrl) => {
-      const base64 = dataUrl.split(',')[1];
-      const binaryString = atob(base64);
-      const len = binaryString.length;
-      const bytes = new Uint8Array(len);
-      for (let i = 0; i < len; i++) {
-        bytes[i] = binaryString.charCodeAt(i);
+    const getImageBytes = async (photo) => {
+      if (!photo) return null;
+      const src = photo.dataUrl || photo.url;
+      if (!src) return null;
+      if (src.startsWith('data:')) {
+        const base64 = src.split(',')[1];
+        const binaryString = atob(base64);
+        const len = binaryString.length;
+        const bytes = new Uint8Array(len);
+        for (let i = 0; i < len; i++) {
+          bytes[i] = binaryString.charCodeAt(i);
+        }
+        return bytes;
       }
-      return bytes;
+      try {
+        const res = await fetch(src);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const buf = await res.arrayBuffer();
+        return new Uint8Array(buf);
+      } catch (e) {
+        console.warn('Gagal unduh gambar untuk docx:', e);
+        return null;
+      }
     };
 
     const pages = [];
@@ -1972,7 +1988,8 @@ async function generateAndDownloadDocx(doc) {
 
     const docChildren = [];
 
-    pages.forEach((pagePhotos, pageIdx) => {
+    for (let pageIdx = 0; pageIdx < pages.length; pageIdx++) {
+      const pagePhotos = pages[pageIdx];
       const isFirstPage = pageIdx === 0;
 
       if (!isFirstPage) {
@@ -2058,22 +2075,26 @@ async function generateAndDownloadDocx(doc) {
           let cellChildren = [];
           if (photo) {
             try {
-              const imageBytes = dataUrlToUint8Array(photo.dataUrl);
-              cellChildren = [
-                new Paragraph({
-                  alignment: AlignmentType.CENTER,
-                  spacing: { before: 15, after: 15 },
-                  children: [
-                    new ImageRun({
-                      data: imageBytes,
-                      transformation: {
-                        width: targetImgWidth,
-                        height: targetImgHeight
-                      }
-                    })
-                  ]
-                })
-              ];
+              const imageBytes = await getImageBytes(photo);
+              if (imageBytes) {
+                cellChildren = [
+                  new Paragraph({
+                    alignment: AlignmentType.CENTER,
+                    spacing: { before: 15, after: 15 },
+                    children: [
+                      new ImageRun({
+                        data: imageBytes,
+                        transformation: {
+                          width: targetImgWidth,
+                          height: targetImgHeight
+                        }
+                      })
+                    ]
+                  })
+                ];
+              } else {
+                cellChildren = [new Paragraph({ text: '' })];
+              }
             } catch (imgErr) {
               cellChildren = [new Paragraph({ text: '' })];
             }
@@ -2104,7 +2125,7 @@ async function generateAndDownloadDocx(doc) {
           rows: tableRows
         })
       );
-    });
+    }
 
     const wordDoc = new Document({
       sections: [
