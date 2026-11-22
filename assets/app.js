@@ -92,6 +92,44 @@ class D1BackendAdapter {
     });
     return await res.json();
   }
+
+  async getUsers() {
+    const res = await fetch(`${this.apiBase}/api/users`, {
+      headers: {
+        'Accept': 'application/json',
+        ...this.getAuthHeaders()
+      }
+    });
+    if (!res.ok) throw new Error(`D1 getUsers HTTP ${res.status}`);
+    return await res.json();
+  }
+
+  async createUser(userData) {
+    const res = await fetch(`${this.apiBase}/api/users`, {
+      method: 'POST',
+      headers: {
+        'Content-Type': 'application/json',
+        ...this.getAuthHeaders()
+      },
+      body: JSON.stringify(userData)
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.message || `D1 HTTP ${res.status}`);
+    return data;
+  }
+
+  async deleteUser(id) {
+    const res = await fetch(`${this.apiBase}/api/users?id=${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+      headers: {
+        'Accept': 'application/json',
+        ...this.getAuthHeaders()
+      }
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) throw new Error(data.message || `D1 HTTP ${res.status}`);
+    return data;
+  }
 }
 
 /**
@@ -162,6 +200,41 @@ class DriveBackendAdapter {
     const res = await fetch(url, {
       method: 'POST',
       body: JSON.stringify({ action: 'login', username, password })
+    });
+    return await res.json();
+  }
+
+  async getUsers() {
+    const url = this.getScriptUrl();
+    if (!url) return [];
+    try {
+      const res = await fetch(`${url}?action=getUsers`);
+      const data = await res.json();
+      return (data && data.success && Array.isArray(data.users)) ? data.users : [];
+    } catch (e) {
+      console.warn('Drive getUsers error:', e);
+      return [];
+    }
+  }
+
+  async createUser(userData) {
+    const url = this.getScriptUrl();
+    if (!url) return false;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'createUser', ...userData })
+    });
+    return await res.json();
+  }
+
+  async deleteUser(id) {
+    const url = this.getScriptUrl();
+    if (!url) return false;
+    const res = await fetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'text/plain;charset=utf-8' },
+      body: JSON.stringify({ action: 'deleteUser', id })
     });
     return await res.json();
   }
@@ -565,6 +638,45 @@ class PMTDataStore {
 
     return null;
   }
+
+  // --- User Management Interface ---
+  async getUsers() {
+    try {
+      return await this.d1Adapter.getUsers();
+    } catch (e) {
+      console.warn('D1 getUsers error, mencoba Drive:', e);
+      if (this.driveAdapter.isConfigured) {
+        return await this.driveAdapter.getUsers();
+      }
+      return [];
+    }
+  }
+
+  async createUser(userData) {
+    let result;
+    try {
+      result = await this.d1Adapter.createUser(userData);
+    } catch (e) {
+      if (!this.driveAdapter.isConfigured) throw e;
+    }
+    if (this.driveAdapter.isConfigured) {
+      this.driveAdapter.createUser(userData).catch(() => {});
+    }
+    return result || { success: true };
+  }
+
+  async deleteUser(id) {
+    let result;
+    try {
+      result = await this.d1Adapter.deleteUser(id);
+    } catch (e) {
+      if (!this.driveAdapter.isConfigured) throw e;
+    }
+    if (this.driveAdapter.isConfigured) {
+      this.driveAdapter.deleteUser(id).catch(() => {});
+    }
+    return result || { success: true };
+  }
 }
 
 // Global Store Instance
@@ -856,12 +968,19 @@ function updateHeaderUserBadge(user) {
   const nameEl = document.getElementById('header-user-name');
   const roleEl = document.getElementById('header-user-role');
   const avatarEl = document.getElementById('header-user-avatar');
+  const btnAdminUsers = document.getElementById('btn-admin-users');
+
   if (nameEl) nameEl.textContent = user?.username || 'Pegawai';
   if (roleEl) roleEl.textContent = user?.role || 'Pegawai';
   if (avatarEl) {
     const name = user?.username || 'P';
     const initials = name.split(' ').map(w => w[0]).filter(Boolean).slice(0, 2).join('').toUpperCase();
     avatarEl.textContent = initials || 'MF';
+  }
+
+  // Tampilkan tombol Kelola Akun hanya untuk Admin
+  if (btnAdminUsers) {
+    btnAdminUsers.style.display = (user?.role === 'Admin') ? 'inline-flex' : 'none';
   }
 }
 
@@ -1657,6 +1776,97 @@ function pickerDeselectAll() {
   updatePickerSelectedCount();
 }
 
+function openRandomPickerModal() {
+  if (!AppState.activeDoc) return;
+  const desa = AppState.activeDoc.desa;
+  const currentDocPhotoPaths = new Set(
+    (AppState.activeDoc.fotos || [])
+      .map(f => (f.galleryPath || f.relativePath || f.filename || '').toLowerCase())
+      .filter(Boolean)
+  );
+
+  const available = AppState.galleryPhotos.filter(p =>
+    p.desa.toLowerCase() === desa.toLowerCase() &&
+    !p.isUsed &&
+    !currentDocPhotoPaths.has((p.relativePath || p.filename || '').toLowerCase())
+  );
+
+  if (available.length === 0) {
+    showToast(`Tidak ada foto tersedia yang belum digunakan untuk Desa ${desa}`, 'error');
+    return;
+  }
+
+  const desaNameEl = document.getElementById('random-picker-desa-name');
+  const labelEl = document.getElementById('random-picker-avail-label');
+  const inputEl = document.getElementById('input-random-count');
+
+  if (desaNameEl) desaNameEl.textContent = `Folder: FOTO PMT\\${desa.toUpperCase()}`;
+  if (labelEl) labelEl.textContent = `Jumlah Foto yang Ingin Dipilih (Tersedia: ${available.length} foto)`;
+  if (inputEl) {
+    inputEl.max = available.length;
+    inputEl.value = Math.min(6, available.length);
+  }
+
+  const modal = document.getElementById('random-picker-modal');
+  if (modal) modal.style.display = 'flex';
+  if (inputEl) {
+    setTimeout(() => {
+      inputEl.focus();
+      inputEl.select();
+    }, 50);
+  }
+}
+
+function closeRandomPickerModal() {
+  const modal = document.getElementById('random-picker-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+function confirmRandomPick() {
+  if (!AppState.activeDoc) return;
+  const desa = AppState.activeDoc.desa;
+  const currentDocPhotoPaths = new Set(
+    (AppState.activeDoc.fotos || [])
+      .map(f => (f.galleryPath || f.relativePath || f.filename || '').toLowerCase())
+      .filter(Boolean)
+  );
+
+  const available = AppState.galleryPhotos.filter(p =>
+    p.desa.toLowerCase() === desa.toLowerCase() &&
+    !p.isUsed &&
+    !currentDocPhotoPaths.has((p.relativePath || p.filename || '').toLowerCase())
+  );
+
+  const inputEl = document.getElementById('input-random-count');
+  let count = parseInt(inputEl ? inputEl.value : 0, 10);
+  if (isNaN(count) || count < 1) {
+    showToast('Masukkan jumlah foto minimal 1', 'error');
+    return;
+  }
+  if (count > available.length) {
+    count = available.length;
+  }
+
+  // Fisher-Yates shuffle untuk hasil pengacakan foto yang adil
+  const shuffled = [...available];
+  for (let i = shuffled.length - 1; i > 0; i--) {
+    const j = Math.floor(Math.random() * (i + 1));
+    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+  }
+
+  pickerDeselectAll();
+  const selected = shuffled.slice(0, count);
+  selected.forEach(p => {
+    AppState.selectedModalPhotos.add(p.id);
+    const chk = document.getElementById(`chk_${p.id}`);
+    if (chk) chk.checked = true;
+  });
+
+  updatePickerSelectedCount();
+  closeRandomPickerModal();
+  showToast(`Berhasil memilih ${selected.length} foto secara acak!`);
+}
+
 async function addSelectedPhotosToDocument() {
   if (AppState.selectedModalPhotos.size === 0) {
     showToast('Pilih minimal 1 foto terlebih dahulu', 'error');
@@ -2239,6 +2449,176 @@ function bindGlobalEvents() {
   });
 }
 
+// ==========================================
+// 15. USER MANAGEMENT CONTROLLER (ADMIN ONLY)
+// ==========================================
+function openUserManagementModal() {
+  const currentUser = getAuthUser();
+  if (!currentUser || currentUser.role !== 'Admin') {
+    showToast('Hanya akun Admin yang dapat mengakses menu ini', 'error');
+    return;
+  }
+
+  const modal = document.getElementById('user-management-modal');
+  if (modal) modal.style.display = 'flex';
+  loadAndRenderUsersList();
+}
+
+function closeUserManagementModal() {
+  const modal = document.getElementById('user-management-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function loadAndRenderUsersList() {
+  const container = document.getElementById('users-table-container');
+  if (!container) return;
+
+  container.innerHTML = `
+    <div style="text-align: center; padding: 1.5rem; color: var(--slate-500); font-size: 0.8125rem;">
+      <svg width="20" height="20" fill="none" viewBox="0 0 24 24" style="animation: spin 1s linear infinite; margin: 0 auto 0.5rem; color: var(--teal-700);">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4" style="opacity: 0.25;"></circle>
+        <path fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+      </svg>
+      <div>Memuat daftar akun pegawai...</div>
+    </div>
+  `;
+
+  try {
+    const users = await pmtStore.getUsers();
+    if (!Array.isArray(users) || users.length === 0) {
+      container.innerHTML = `
+        <div style="text-align: center; padding: 1rem; color: var(--slate-500); font-size: 0.8125rem;">
+          Belum ada data pengguna terdaftar.
+        </div>
+      `;
+      return;
+    }
+
+    const currentAuth = getAuthUser();
+
+    let html = `
+      <div style="overflow-x: auto; border: 1px solid var(--slate-200); border-radius: 8px;">
+        <table style="width: 100%; border-collapse: collapse; font-size: 0.8125rem; text-align: left;">
+          <thead>
+            <tr style="background: var(--slate-100); border-bottom: 1px solid var(--slate-200); color: var(--slate-700);">
+              <th style="padding: 0.6rem 0.75rem;">No</th>
+              <th style="padding: 0.6rem 0.75rem;">Nama Pegawai</th>
+              <th style="padding: 0.6rem 0.75rem;">Role Akses</th>
+              <th style="padding: 0.6rem 0.75rem;">Unit Puskesmas</th>
+              <th style="padding: 0.6rem 0.75rem; text-align: center;">Aksi</th>
+            </tr>
+          </thead>
+          <tbody>
+    `;
+
+    users.forEach((u, idx) => {
+      const isCurrent = currentAuth && (String(currentAuth.id) === String(u.id) || currentAuth.username.toLowerCase() === u.username.toLowerCase());
+      const isPrimaryAdmin = String(u.id) === '1' || u.username.toLowerCase() === 'mochamad fauzie, s.gz';
+      const roleBadge = u.role === 'Admin'
+        ? `<span style="background: #f3e8ff; color: #6b21a8; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 700; font-size: 0.75rem;">Admin</span>`
+        : `<span style="background: #ecfdf5; color: #065f46; padding: 0.2rem 0.5rem; border-radius: 9999px; font-weight: 700; font-size: 0.75rem;">Nutrusionist</span>`;
+
+      html += `
+        <tr style="border-bottom: 1px solid var(--slate-200); background: ${isCurrent ? '#f0fdf4' : '#ffffff'};">
+          <td style="padding: 0.6rem 0.75rem; color: var(--slate-500);">${idx + 1}</td>
+          <td style="padding: 0.6rem 0.75rem; font-weight: 600; color: var(--slate-900);">
+            ${escapeHtml(u.username)}
+            ${isCurrent ? ' <span style="font-size: 0.7rem; color: var(--teal-700); font-weight: 700;">(Anda)</span>' : ''}
+          </td>
+          <td style="padding: 0.6rem 0.75rem;">${roleBadge}</td>
+          <td style="padding: 0.6rem 0.75rem; color: var(--slate-600);">${escapeHtml(u.puskesmas || 'Puskesmas Banjaran Kota')}</td>
+          <td style="padding: 0.6rem 0.75rem; text-align: center;">
+            ${(isPrimaryAdmin || isCurrent) ? `
+              <span style="font-size: 0.75rem; color: var(--slate-400); font-style: italic;">Terkunci</span>
+            ` : `
+              <button 
+                type="button" 
+                class="btn btn-danger btn-sm" 
+                style="padding: 0.25rem 0.55rem; font-size: 0.75rem;" 
+                onclick="confirmDeleteUser('${u.id}', '${escapeHtml(u.username)}')"
+                title="Hapus Akun Ini"
+              >
+                Hapus
+              </button>
+            `}
+          </td>
+        </tr>
+      `;
+    });
+
+    html += `
+          </tbody>
+        </table>
+      </div>
+    `;
+
+    container.innerHTML = html;
+  } catch (err) {
+    console.error('Error loading users:', err);
+    container.innerHTML = `
+      <div style="text-align: center; padding: 1rem; color: var(--rose-600); font-size: 0.8125rem;">
+        Gagal memuat daftar akun: ${err.message}
+      </div>
+    `;
+  }
+}
+
+async function handleCreateUserSubmit(event) {
+  if (event) event.preventDefault();
+  const usernameInput = document.getElementById('new-user-username');
+  const passwordInput = document.getElementById('new-user-password');
+  const roleSelect = document.getElementById('new-user-role');
+  const puskesmasInput = document.getElementById('new-user-puskesmas');
+  const submitBtn = document.getElementById('btn-submit-new-user');
+
+  const username = usernameInput ? usernameInput.value.trim() : '';
+  const password = passwordInput ? passwordInput.value.trim() : '';
+  const role = roleSelect ? roleSelect.value : 'Nutrusionist';
+  const puskesmas = puskesmasInput ? puskesmasInput.value.trim() : 'Puskesmas Banjaran Kota';
+
+  if (!username || !password) {
+    showToast('Nama pegawai dan kata sandi wajib diisi', 'error');
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.innerHTML = 'Menyimpan...';
+  }
+
+  try {
+    await pmtStore.createUser({ username, password, role, puskesmas });
+    showToast(`Akun ${role} "${username}" berhasil dibuat!`);
+    if (usernameInput) usernameInput.value = '';
+    if (passwordInput) passwordInput.value = '';
+    await loadAndRenderUsersList();
+  } catch (err) {
+    console.error('Gagal membuat akun:', err);
+    showToast(`Gagal membuat akun: ${err.message}`, 'error');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerHTML = `
+        <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+        Simpan & Buat Akun
+      `;
+    }
+  }
+}
+
+async function confirmDeleteUser(id, username) {
+  if (confirm(`Apakah Anda yakin ingin menghapus akun "${username}"? Pegawai tersebut tidak akan bisa login lagi.`)) {
+    try {
+      await pmtStore.deleteUser(id);
+      showToast(`Akun "${username}" berhasil dihapus.`);
+      await loadAndRenderUsersList();
+    } catch (err) {
+      console.error('Gagal menghapus akun:', err);
+      showToast(`Gagal menghapus akun: ${err.message}`, 'error');
+    }
+  }
+}
+
 // Global scope bindings
 window.createNewDocument = createNewDocument;
 window.editDocument = editDocument;
@@ -2272,6 +2652,14 @@ window.fillAdminCredentials = fillAdminCredentials;
 window.openCloudConfigModal = openCloudConfigModal;
 window.closeCloudConfigModal = closeCloudConfigModal;
 window.saveCloudConfig = saveCloudConfig;
+window.openRandomPickerModal = openRandomPickerModal;
+window.closeRandomPickerModal = closeRandomPickerModal;
+window.confirmRandomPick = confirmRandomPick;
+window.openUserManagementModal = openUserManagementModal;
+window.closeUserManagementModal = closeUserManagementModal;
+window.loadAndRenderUsersList = loadAndRenderUsersList;
+window.handleCreateUserSubmit = handleCreateUserSubmit;
+window.confirmDeleteUser = confirmDeleteUser;
 window.refreshPickerPhotos = async function(desa) {
   showToast('Memeriksa foto terbaru di Google Drive...');
   await refreshGallery(true);

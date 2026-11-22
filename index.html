@@ -147,6 +147,12 @@
           <span id="cloud-status-badge" style="font-size: 0.75rem; font-weight: 600;">Google Drive</span>
         </button>
 
+        <!-- Admin User Management Button (Khusus Admin) -->
+        <button class="btn btn-secondary btn-sm" id="btn-admin-users" onclick="openUserManagementModal()" title="Kelola Akun Pegawai (Admin)" style="display: none; padding: 0.35rem 0.65rem; border-radius: 9999px; align-items: center; gap: 0.35rem;">
+          <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+          <span style="font-size: 0.75rem; font-weight: 600;">Kelola Akun</span>
+        </button>
+
         <!-- Logged-in User Profile Badge -->
         <div class="user-profile-badge" id="header-user-badge" title="Akun Pegawai Aktif">
           <div class="user-avatar" id="header-user-avatar">MF</div>
@@ -497,11 +503,12 @@
         </div>
 
         <div style="padding: 0.75rem 1.5rem; background-color: var(--slate-50); border-bottom: 1px solid var(--slate-200); display: flex; align-items: center; justify-content: space-between; gap: 0.5rem; flex-wrap: wrap;">
-          <div style="display: flex; gap: 0.5rem; align-items: center;">
+          <div style="display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
             <span style="font-size: 0.8125rem; font-weight: 600; color: var(--slate-700);">Pilih Cepat:</span>
             <button class="btn btn-secondary btn-sm" onclick="pickerSelectBatch(6)">Pilih 6 Foto (Hal 1)</button>
             <button class="btn btn-secondary btn-sm" onclick="pickerSelectBatch(9)">Pilih 9 Foto (Hal 2)</button>
             <button class="btn btn-secondary btn-sm" onclick="pickerSelectBatch(15)">Pilih 15 Foto (Hal 1 & 2)</button>
+            <button class="btn btn-secondary btn-sm" onclick="openRandomPickerModal()" style="font-weight: 600; background: #ecfdf5; border-color: #a7f3d0; color: #065f46;" title="Pilih otomatis secara acak">🎲 Pilih Cepat Random</button>
             <button class="btn btn-secondary btn-sm" onclick="pickerSelectAllUnused()">Pilih Semua yang Belum Dipakai</button>
             <button class="btn btn-secondary btn-sm" onclick="pickerDeselectAll()">Batal Pilih</button>
           </div>
@@ -558,6 +565,130 @@
         <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem;">
           <button class="btn btn-secondary" onclick="closeCloudConfigModal()">Batal</button>
           <button class="btn btn-primary" onclick="saveCloudConfig()">Simpan & Hubungkan</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: Pilih Cepat Random -->
+    <div class="modal-overlay" id="random-picker-modal" style="display: none; z-index: 100010;">
+      <div class="modal-card" style="max-width: 400px;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <div style="width: 32px; height: 32px; border-radius: 8px; background: var(--teal-50); color: var(--teal-700); display: flex; align-items: center; justify-content: center; font-size: 1.1rem;">
+              🎲
+            </div>
+            <div>
+              <div class="modal-title">Pilih Foto Secara Random</div>
+              <div style="font-size: 0.75rem; color: var(--slate-500);" id="random-picker-desa-name">Pilih foto acak yang belum terpakai</div>
+            </div>
+          </div>
+          <button class="modal-close-btn" onclick="closeRandomPickerModal()">&times;</button>
+        </div>
+        <div class="modal-body" style="padding: 1.25rem;">
+          <p style="font-size: 0.8125rem; color: var(--slate-600); margin-bottom: 0.85rem; line-height: 1.4;">
+            Sistem akan memilih foto secara acak dari folder foto desa ini yang statusnya masih <strong>Belum Digunakan</strong>.
+          </p>
+          <div class="form-group" style="margin-bottom: 0.5rem;">
+            <label class="form-label" id="random-picker-avail-label" style="font-weight: 600;">Jumlah Foto yang Ingin Dipilih</label>
+            <input 
+              type="number" 
+              id="input-random-count" 
+              class="form-control" 
+              min="1" 
+              value="6" 
+              placeholder="Contoh: 6"
+              style="font-size: 1.1rem; font-weight: 700; text-align: center; padding: 0.6rem; color: var(--teal-800);"
+              onkeydown="if(event.key === 'Enter') confirmRandomPick()"
+            >
+          </div>
+          <div style="display: flex; gap: 0.35rem; justify-content: center; margin-top: 0.65rem;">
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('input-random-count').value = 6">6 Foto (Hal 1)</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('input-random-count').value = 9">9 Foto (Hal 2)</button>
+            <button type="button" class="btn btn-secondary btn-sm" onclick="document.getElementById('input-random-count').value = 15">15 Foto (2 Hal)</button>
+          </div>
+        </div>
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; gap: 0.5rem; padding: 0.85rem 1.25rem;">
+          <button class="btn btn-secondary" onclick="closeRandomPickerModal()">Batal</button>
+          <button class="btn btn-primary" onclick="confirmRandomPick()" style="font-weight: 600;">OK, Pilih Otomatis</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- MODAL: Kelola Akun Pegawai (Admin Khusus) -->
+    <div class="modal-overlay" id="user-management-modal" style="display: none; z-index: 100000;">
+      <div class="modal-card" style="max-width: 650px; max-height: 90vh; display: flex; flex-direction: column;">
+        <div class="modal-header">
+          <div style="display: flex; align-items: center; gap: 0.5rem;">
+            <div style="width: 34px; height: 34px; border-radius: 8px; background: #ecfdf5; color: var(--teal-700); display: flex; align-items: center; justify-content: center;">
+              <svg width="20" height="20" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4.354a4 4 0 110 5.292M15 21H3v-1a6 6 0 0112 0v1zm0 0h6v-1a6 6 0 00-9-5.197M13 7a4 4 0 11-8 0 4 4 0 018 0z"></path></svg>
+            </div>
+            <div>
+              <div class="modal-title">Kelola Akun Pegawai</div>
+              <div style="font-size: 0.75rem; color: var(--slate-500);">Tambah akun baru & atur hak akses (Admin / Nutrusionist)</div>
+            </div>
+          </div>
+          <button class="modal-close-btn" onclick="closeUserManagementModal()">&times;</button>
+        </div>
+
+        <div class="modal-body" style="padding: 1.25rem; overflow-y: auto;">
+          <!-- Form Tambah Akun Baru -->
+          <div style="background: var(--slate-50); border: 1px solid var(--slate-200); border-radius: 10px; padding: 1rem; margin-bottom: 1.25rem;">
+            <div style="font-weight: 700; font-size: 0.875rem; color: var(--slate-800); margin-bottom: 0.75rem; display: flex; align-items: center; gap: 0.35rem;">
+              <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M18 9v3m0 0v3m0-3h3m-3 0h-3m-2-5a4 4 0 11-8 0 4 4 0 018 0zM3 20a6 6 0 0112 0v1H3v-1z"></path></svg>
+              Tambah Akun Baru
+            </div>
+
+            <form id="form-create-user" onsubmit="handleCreateUserSubmit(event)" style="display: grid; grid-template-columns: 1fr 1fr; gap: 0.75rem;">
+              <div class="form-group" style="grid-column: span 1;">
+                <label class="form-label" style="font-size: 0.8125rem;">Nama Pegawai (Username)</label>
+                <input type="text" id="new-user-username" class="form-control" placeholder="Contoh: Rina Melati, S.Gz" required>
+              </div>
+
+              <div class="form-group" style="grid-column: span 1;">
+                <label class="form-label" style="font-size: 0.8125rem;">Kata Sandi (Password)</label>
+                <input type="text" id="new-user-password" class="form-control" placeholder="Masukkan password" required>
+              </div>
+
+              <div class="form-group" style="grid-column: span 1;">
+                <label class="form-label" style="font-size: 0.8125rem;">Role Akses</label>
+                <select id="new-user-role" class="form-control" required>
+                  <option value="Nutrusionist" selected>Nutrusionist</option>
+                  <option value="Admin">Admin</option>
+                </select>
+              </div>
+
+              <div class="form-group" style="grid-column: span 1;">
+                <label class="form-label" style="font-size: 0.8125rem;">Unit Kerja / Puskesmas</label>
+                <input type="text" id="new-user-puskesmas" class="form-control" value="Puskesmas Banjaran Kota">
+              </div>
+
+              <div style="grid-column: span 2; display: flex; justify-content: flex-end; margin-top: 0.25rem;">
+                <button type="submit" class="btn btn-primary btn-sm" id="btn-submit-new-user" style="font-weight: 600; padding: 0.45rem 1rem;">
+                  <svg width="15" height="15" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+                  Simpan & Buat Akun
+                </button>
+              </div>
+            </form>
+          </div>
+
+          <!-- Daftar Akun Terdaftar -->
+          <div>
+            <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 0.65rem;">
+              <div style="font-weight: 700; font-size: 0.875rem; color: var(--slate-800);">Daftar Akun Pegawai</div>
+              <button type="button" class="btn btn-secondary btn-sm" onclick="loadAndRenderUsersList()" title="Segarkan daftar akun" style="font-size: 0.75rem; padding: 0.25rem 0.6rem;">
+                <svg width="13" height="13" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+                Segarkan
+              </button>
+            </div>
+
+            <div id="users-table-container">
+              <div style="text-align: center; padding: 1.5rem; color: var(--slate-500); font-size: 0.8125rem;">Memuat daftar akun...</div>
+            </div>
+          </div>
+        </div>
+
+        <div class="modal-footer" style="display: flex; justify-content: flex-end; padding: 0.85rem 1.25rem;">
+          <button class="btn btn-secondary" onclick="closeUserManagementModal()">Tutup</button>
         </div>
       </div>
     </div>

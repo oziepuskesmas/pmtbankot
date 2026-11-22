@@ -148,12 +148,82 @@ export default {
         }
 
         if (env.DB) {
-          const { results } = await env.DB.prepare('SELECT id, username, role, puskesmas, created_at FROM users').all();
+          const { results } = await env.DB.prepare('SELECT id, username, role, puskesmas, created_at FROM users ORDER BY id ASC').all();
           return new Response(JSON.stringify(results || []), { headers });
         }
         return new Response(JSON.stringify([
           { id: 1, username: 'Mochamad Fauzie, S.Gz', role: 'Admin', puskesmas: 'Puskesmas Banjaran Kota' }
         ]), { headers });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
+      }
+    }
+
+    // 2b. API: POST /api/users (Buat Akun Pegawai Baru - Khusus Admin)
+    if (url.pathname === '/api/users' && request.method === 'POST') {
+      try {
+        const authUser = await authenticateRequest(request, env);
+        if (!authUser) {
+          return new Response(JSON.stringify({ success: false, message: 'Autentikasi diperlukan.' }), { status: 401, headers });
+        }
+        if (authUser.role !== 'Admin') {
+          return new Response(JSON.stringify({ success: false, message: 'Hanya Admin yang dapat membuat akun baru.' }), { status: 403, headers });
+        }
+
+        const body = await request.json();
+        const username = (body.username || '').trim();
+        const password = (body.password || '').trim();
+        const role = (body.role === 'Admin') ? 'Admin' : 'Nutrusionist';
+        const puskesmas = (body.puskesmas || 'Puskesmas Banjaran Kota').trim();
+
+        if (!username || !password) {
+          return new Response(JSON.stringify({ success: false, message: 'Nama pegawai dan kata sandi wajib diisi.' }), { status: 400, headers });
+        }
+
+        if (env.DB) {
+          const existing = await env.DB.prepare('SELECT id FROM users WHERE LOWER(username) = LOWER(?)').bind(username).first();
+          if (existing) {
+            return new Response(JSON.stringify({ success: false, message: 'Nama pegawai sudah terdaftar. Gunakan nama lain.' }), { status: 400, headers });
+          }
+
+          const res = await env.DB.prepare(
+            'INSERT INTO users (username, password, role, puskesmas, created_at) VALUES (?, ?, ?, ?, ?)'
+          ).bind(username, password, role, puskesmas, new Date().toISOString()).run();
+
+          return new Response(JSON.stringify({ success: true, id: res.meta.last_row_id }), { headers });
+        }
+
+        return new Response(JSON.stringify({ success: true, message: 'Mode tanpa database' }), { headers });
+      } catch (err) {
+        return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
+      }
+    }
+
+    // 2c. API: DELETE /api/users (Hapus Akun Pegawai - Khusus Admin)
+    if (url.pathname === '/api/users' && request.method === 'DELETE') {
+      try {
+        const authUser = await authenticateRequest(request, env);
+        if (!authUser) {
+          return new Response(JSON.stringify({ success: false, message: 'Autentikasi diperlukan.' }), { status: 401, headers });
+        }
+        if (authUser.role !== 'Admin') {
+          return new Response(JSON.stringify({ success: false, message: 'Hanya Admin yang dapat menghapus akun.' }), { status: 403, headers });
+        }
+
+        const id = url.searchParams.get('id');
+        if (!id) {
+          return new Response(JSON.stringify({ success: false, message: 'Parameter id wajib disertakan.' }), { status: 400, headers });
+        }
+
+        if (String(id) === '1' || String(authUser.id) === String(id)) {
+          return new Response(JSON.stringify({ success: false, message: 'Akun Admin utama atau akun yang sedang aktif tidak dapat dihapus.' }), { status: 400, headers });
+        }
+
+        if (env.DB) {
+          await env.DB.prepare('DELETE FROM users WHERE id = ?').bind(id).run();
+        }
+
+        return new Response(JSON.stringify({ success: true, id }), { headers });
       } catch (err) {
         return new Response(JSON.stringify({ error: err.message }), { status: 500, headers });
       }
